@@ -168,7 +168,7 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
         sf.postMessage(`go depth ${depth}`)
         if (runsf11) {
             sf11.postMessage(moves.length > 0 ? `position startpos moves ${moves.join(" ")}` : "position startpos")
-            sf11.postMessage(`go depth 7`)
+            sf11.postMessage(`go depth 6`)
         }
     })
 }
@@ -204,10 +204,10 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
         if (eval_before?.type === "cp" && eval_after?.type === "cp") {
             if (side_to_move === "w") {
                 loss = eval_before.value - eval_after.value
-                brilliant_loss = eval_before.value - second_best_eval
+                brilliant_loss = eval_after.value - second_best_eval
             } else {
                 loss = eval_after.value - eval_before.value
-                brilliant_loss = second_best_eval - eval_before.value
+                brilliant_loss = second_best_eval - eval_after.value
             }
             loss = Math.max(0, loss)
         }
