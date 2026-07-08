@@ -8,14 +8,21 @@
   import { startEngine, getEvaluation, cancelAnalysis } from "../engine/engine.js"
   import { useRoute } from 'vue-router'
 
+  // Flag gates for preventing startup racing
+  let boardReady = false
+  let engineReady = false 
+
   onMounted(async () => {
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('click', closeContextMenu)
     window.addEventListener('scroll', closeContextMenu, true)
     reportTitle.value.style.backgroundColor = passiveColor.value
     await startEngine();
+    engineReady = true
     if (!route.query.moves){
       await getAccuracy()
+    } else {
+      await tryLoadImportedGame()
     }
   });
 
@@ -277,40 +284,7 @@
     jumpToNode(nodeId)
   }
 
-  const materialInfo = computed(() => {
-    treeVersion.value
-    const startCounts = { p: 8, n: 2, b: 2, r: 2, q: 1 }
-    const remaining = { w: { ...startCounts }, b: { ...startCounts } }
-
-    for (const row of chess.board()) {
-      for (const square of row) {
-        if (!square || square.type === 'k') continue
-        remaining[square.color][square.type]--
-      }
-    }
-
-    const values = { p: 1, n: 3, b: 3, r: 5, q: 9 }
-    let diff = 0
-    const capturedByWhite = []
-    const capturedByBlack = []
-
-    for (const type of ['q', 'r', 'b', 'n', 'p']) {
-      const blackLost = remaining.b[type]
-      const whiteLost = remaining.w[type]
-      diff += values[type] * (blackLost - whiteLost)
-      for (let i = 0; i < blackLost; i++) capturedByWhite.push(type)
-      for (let i = 0; i < whiteLost; i++) capturedByBlack.push(type)
-    }
-
-    return { diff, capturedByWhite, capturedByBlack }
-  })
-
-  function pieceSymbol(type, pieceColor) {
-    const whiteMap = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛' }
-    const blackMap = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛' }
-    return (pieceColor === 'w' ? whiteMap : blackMap)[type] || ''
-  }
-
+  // Audio Context management safely wrapped inside an explicit check
   function ensureAudioCtx() {
     if (!audioCtx) {
       const Ctx = window.AudioContext || window.webkitAudioContext
@@ -376,6 +350,7 @@
   function copyPGN() { copyToClipboard(chess.pgn() || '(no moves yet)', 'PGN') }
   function copyFEN() { copyToClipboard(chess.fen(), 'FEN') }
 
+  // Arrow Drawing Logic
   function drawBestArrow() {
     if (!showBestArrow.value || !boardAPI.value || !bestArrowSquares.value) return
     const { from, to } = bestArrowSquares.value
@@ -386,20 +361,11 @@
     boardAPI.value = api
     chess.reset()
     boardAPI.value.setPosition(chess.fen())
-    if (route.query.moves) {
-      const importedUciList = route.query.moves.split('-')
-      await loadImportedGame(importedUciList)
-    }
+    boardReady = true
+    await tryLoadImportedGame()
   }
 
-  async function loadImportedGame(uciList) {
-    for (const uci of uciList) {
-      const result = applyUciMove(uci)
-      if (!result) break
-      boardAPI.value.setPosition(chess.fen())
-      await getAccuracy()
-    }
-  }
+  
 
   async function handleBothMoves(move) {
     const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
@@ -554,11 +520,12 @@
       const evalType = moveData.value.eval.type
       if (evalType === "mate") {
           if (evalValue >= 0) { cp.value = 800; height.value = 0 }
-          else { cp.value = -800; height.value = 95.5 }
+          else { cp.value = -800; height.value = 100 }
           return
       }
       cp.value = Math.max(-800, Math.min(800, evalValue))
-      height.value = 47.75 - (cp.value / 800) * 47.75
+      // Scales exactly from 0% (full white) to 100% (full black)
+      height.value = 50 - (cp.value / 800) * 50
   }
 
   function flipBoard() {
@@ -664,30 +631,24 @@
   }
 
   function squareStyle(square) {
-      if (!square || !boardRef.value) return {}
-      const boardEl = boardRef.value.querySelector('.cg-wrap')
-      if (!boardEl) return {}
-      
-      const boardRect = boardEl.getBoundingClientRect()
-      const wrapperRect = boardRef.value.getBoundingClientRect()
-      const squareSize = boardRect.width / 8
+    if (!square) return {}
 
-      const file = square.charCodeAt(0) - 97
-      const rank = parseInt(square[1]) - 1
-      const isFlipped = (rotate.value / 180) % 2 === 1
-      const col = isFlipped ? 7 - file : file
-      const row = isFlipped ? rank : 7 - rank
+    const file = square.charCodeAt(0) - 97
+    const rank = parseInt(square[1]) - 1
+    const isFlipped = (rotate.value / 180) % 2 === 1
 
-      const offsetX = boardRect.left - wrapperRect.left
-      const offsetY = boardRect.top - wrapperRect.top
+    const col = isFlipped ? 7 - file : file
+    const row = isFlipped ? rank : 7 - rank
 
-      return {
-          position: 'absolute',
-          left: `${offsetX + (col + 1) * squareSize}px`,
-          top: `${offsetY + row * squareSize}px`,  
-          transform: 'translate(-70%, -35%)',
-      }
-  }
+    // Each square is exactly 12.5% of the board's width/height.
+    // (col + 1) aligns to the right edge of the square; row aligns to the top edge.
+    return {
+        position: 'absolute',
+        left: `${(col + 1) * 12.5}%`,
+        top: `${row * 12.5}%`,  
+        transform: 'translate(-70%, -35%)',
+    }
+}
 
   async function playMove() {
       if (!moveData.value?.best_move) return
@@ -790,6 +751,23 @@
   }
 
   // Game report logic
+  async function loadImportedGame(uciList) {
+    for (const uci of uciList) {
+      const result = applyUciMove(uci)
+      if (!result) break
+      boardAPI.value.setPosition(chess.fen())
+      await getAccuracy()
+    }
+    goToStart()
+  }
+
+  async function tryLoadImportedGame() {
+    if (boardReady && engineReady && route.query.moves) {
+      const importedUciList = route.query.moves.split('-')
+      await loadImportedGame(importedUciList)
+    }
+  }
+
   const classificationOrder = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'blunder']
 
   const classificationMeta = {
@@ -820,7 +798,7 @@
     const black = { counts: emptyCounts(), weightedSum: 0, moveCount: 0 }
 
     let current = moveTree.children[0] ?? null
-    let ply = 1 // ply 1 = white's 1st move, ply 2 = black's 1st move, etc.
+    let ply = 1 
 
     while (current) {
       const side = ply % 2 === 1 ? white : black
@@ -864,25 +842,36 @@
           <span class="player-name">{{ topPlayer.name }}</span>
           <span class="player-rating" v-if="topPlayer.rating">{{ topPlayer.rating }}</span>
         </div>
-        <TheChessboard 
-          @move="handleBothMoves" 
-          @board-created="onBoardCreated" 
-          :board-config="{ coordinates: true }" 
-        />
-        <img
-          v-if="lastMoveSquare && lastMoveAccuracy"
-          :src="accuracySymbol(lastMoveAccuracy)"
-          class="board-acc-icon"
-          :style="squareStyle(lastMoveSquare)"
-        />
-        <div class="material-row" v-if="materialInfo.capturedByWhite.length || materialInfo.capturedByBlack.length">
-          <div class="material-side">
-            <span v-for="(p, i) in materialInfo.capturedByBlack" :key="'cb'+i" class="captured-piece white">{{ pieceSymbol(p, 'w') }}</span>
-            <span v-if="materialInfo.diff < 0" class="material-diff">+{{ -materialInfo.diff }}</span>
+        
+        <div class="board-row">
+          <div class="board-col">
+            <!-- Added specific class to handle overflow bounds -->
+            <TheChessboard 
+              class="game-board"
+              @move="handleBothMoves" 
+              @board-created="onBoardCreated" 
+              :board-config="{ coordinates: true }" 
+            />
+            <img
+              v-if="lastMoveSquare && lastMoveAccuracy"
+              :src="accuracySymbol(lastMoveAccuracy)"
+              class="board-acc-icon"
+              :style="squareStyle(lastMoveSquare)"
+            />
           </div>
-          <div class="material-side">
-            <span v-for="(p, i) in materialInfo.capturedByWhite" :key="'cw'+i" class="captured-piece black">{{ pieceSymbol(p, 'b') }}</span>
-            <span v-if="materialInfo.diff > 0" class="material-diff">+{{ materialInfo.diff }}</span>
+          
+          <div class="evalbar">
+            <div class="evalbar-inner">
+              <template v-if="!isFlipped">
+                <div class="blackeval" :style="{ height: height + '%', borderRadius: '10px 10px 0 0' }"></div>
+                <div class="whiteeval" :style="{ height: (100 - height) + '%', borderRadius: '0 0 10px 10px' }"></div>
+              </template>
+              <template v-else>
+                <div class="whiteeval" :style="{ height: (100 - height) + '%', borderRadius: '10px 10px 0 0' }"></div>
+                <div class="blackeval" :style="{ height: height + '%', borderRadius: '0 0 10px 10px' }"></div>
+              </template>
+            </div>
+            <p class="evalnum">{{ formatEval(moveData?.eval) }}</p>
           </div>
         </div>
 
@@ -900,20 +889,6 @@
           <button class="jumpend" @click="goToEnd" :disabled="currentNode.children.length === 0" title="Jump to end">⏭</button>
           <button class="reset" @click="resetAccuracy" title="reset">🗘</button>
         </div>
-      </div>
-      
-      <div class="evalbar">
-        <div class="evalbar-inner">
-          <template v-if="!isFlipped">
-            <div class="blackeval" :style="{ height: height + '%', borderRadius: '10px 10px 0 0'}"></div>
-            <div class="whiteeval" :style="{ height: 95.5-height + '%', borderRadius: '0 0 10px 10px'}"></div>
-          </template>
-          <template v-else>
-            <div class="whiteeval" :style="{ borderRadius: '10px 10px 0 0', height: 95.5-height + '%' }"></div>
-            <div class="blackeval" :style="{ height: height + '%', borderRadius: '0 0 10px 10px' }"></div>
-          </template>
-        </div>
-        <p class="evalnum">{{ formatEval(moveData?.eval) }}</p>
       </div>
     </div>
     
@@ -1094,38 +1069,74 @@
 
   .title-slot { grid-area: title; min-width: 0; }
 
-  .board-wrapper {
-      position: relative;
-      width: 100%;
-      max-width: 600px;
-      min-width: 0;
-      flex: 1 1 280px;
-      margin: 0;
-  }
-
-  .chessboard { width: 100%; max-width: 600px; margin: 0 auto; }
-
   .board-area {
     grid-area: board;
     display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: flex-start;
     justify-content: center;
-    gap: 0.5rem 0.75rem;
     width: 100%;
     min-width: 0;
   }
 
+  .board-wrapper {
+    position: relative;
+    width: 100%;
+    /* Controls the master width for the board, evalbar, AND tools together */
+    max-width: min(95vw, 38rem); 
+    min-width: 0;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
 
+  .board-col {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+    display: flex;             /* Makes the board fit exact bounds */
+    flex-direction: column;    /* Removes invisible trailing vertical space */
+  }
+
+  /* Force the library container instance to fit perfectly within the flex column boundaries */
+  .game-board {
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1 !important;
+    display: block;
+  }
+
+  /* Constrain the inner chessground wrapper element to match the layout parent */
   :deep(.cg-wrap) {
     overflow: hidden;
-    width: 100%;
-    aspect-ratio: 1;
-    max-width: min(90vw, 35rem);
-    height: auto;
+    width: 100% !important;
+    height: 100% !important;
     box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
     border-radius: 8px;
+  }
+
+  .board-row {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem; /* physical gap separation */
+    width: 100%;
+  }
+
+  .evalbar {
+    width: clamp(24px, 4vw, 40px);
+    flex-shrink: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .evalbar-inner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
   }
 
   /* --- Player bar (imported game info) --- */
@@ -1134,17 +1145,21 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.7rem;
-    margin-bottom: 0.4rem;
+    margin-bottom: 0.2rem;      /* Tighter gap to the board */
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.22);
     color: #f4f0e3;
     font-family: 'Inter', sans-serif;
     font-size: clamp(0.82rem, 1.8vw, 0.95rem);
-    max-width: min(90vw, 35rem);
+    width: 100%;                /* Forces parallel alignment */
     box-sizing: border-box;
   }
 
-  .player-bar.bottom { margin-top: 0.4rem; margin-bottom: 0; }
+  /* Specific spacing for the bottom player name */
+  .player-bar.bottom {
+    margin-bottom: 0;
+    margin-top: 0.2rem;         /* Pulls it up close to the evalbar bottom */
+  }
 
   .player-color-dot {
     width: 0.6rem;
@@ -1357,14 +1372,14 @@
     justify-content: center;
     align-items: center;
     min-height: 3.2rem;
-    width: 100%;
-    max-width: 600px;
+    width: 100%;  
+    box-sizing: border-box;
     background: linear-gradient(145deg, #8b5a32, #6d4524);
     border: 2px solid rgba(182, 173, 144, 0.4);
     padding: 0.5rem 1rem;
     border-radius: 10px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    margin: 0 auto;
+    margin: 0.4rem 0 0 0;  
     flex-wrap: wrap;
     position: relative;
   }
@@ -1434,62 +1449,6 @@
       from { opacity: 0; }
       to { opacity: 0.8; }
   }
-
-  /* --- Material Display --- */
-  .material-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.15rem 0.6rem;
-      min-height: 1.6rem;
-      font-size: 1.2rem;
-  }
-
-  .material-side {
-      display: flex;
-      align-items: center;
-      gap: 0.05rem;
-      flex-wrap: wrap;
-  }
-
-  .captured-piece.white {
-      color: white;
-      text-shadow: 0 0 1px #1a1208, 0 1px 1px rgba(0, 0, 0, 0.6);
-  }
-
-  .captured-piece.black {
-      color: #14100c;
-      text-shadow: 0 1px 2px rgba(255, 255, 255, 0.45);
-  }
-
-  .material-diff {
-      font-family: "JetBrains Mono", monospace;
-      margin-left: 0.4rem;
-      font-size: 0.8rem;
-      font-weight: 700;
-      color: #a8d97a;
-      background: rgba(0, 0, 0, 0.2);
-      border-radius: 6px;
-      padding: 0.05rem 0.4rem;
-  }
-
-  /* --- Evaluation Bar --- */
-  .evalbar {
-    width: clamp(20px, 4vw, 40px);
-    height: min(94.5vw, 37rem);
-    max-height: min(94.5vw, 37rem);
-    position: relative;
-    overflow: hidden;
-    flex-shrink: 0;
-  }
-
-  .evalbar-inner {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-  }
-
 
   .blackeval, .whiteeval {
       width: 100%;

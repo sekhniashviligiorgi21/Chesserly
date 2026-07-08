@@ -168,7 +168,7 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
         sf.postMessage(`go depth ${depth}`)
         if (runsf11) {
             sf11.postMessage(moves.length > 0 ? `position startpos moves ${moves.join(" ")}` : "position startpos")
-            sf11.postMessage(`go depth 5`)
+            sf11.postMessage(`go depth 7`)
         }
     })
 }
