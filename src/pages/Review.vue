@@ -1,12 +1,19 @@
 <script setup>
-  import { ref, computed } from 'vue'
+  import { ref, computed, watch } from 'vue'
   import Title from '../assets/Title.vue'
   import { Chess } from 'chess.js'
   import { useRouter } from 'vue-router'
 
   const router = useRouter()
 
-  const username = ref('')
+  const USERNAME_STORAGE_KEY = 'chesslab_username'
+
+  const username = ref(localStorage.getItem(USERNAME_STORAGE_KEY) || '')
+
+  watch(username, (val) => {
+    localStorage.setItem(USERNAME_STORAGE_KEY, val)
+  })
+
   const year = ref('')
   const month = ref('month')
   const games = ref([])

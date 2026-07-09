@@ -65,7 +65,11 @@ export function cancelAnalysis() {
         sf.postMessage('stop')
         sf11.addEventListener('message', absorber)
         sf11.postMessage('stop')
-        setTimeout(() => { sf.removeEventListener('message', absorber); resolve() }, 100)
+        setTimeout(() => {
+            sf.removeEventListener('message', absorber)
+            sf11.removeEventListener('message', absorber)   // was missing
+            resolve()
+        }, 100)
     })
 }
 
@@ -157,10 +161,34 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
 
             if (msg.startsWith("bestmove")) {
                 sf.onmessage = null
-                sf11.onmessage = null
-                sf11.postMessage('stop')
-                currentResolve = null
-                resolve({ evaluation, topMoves, best11 }) // best11 included in result
+                const finish = () => {
+                    sf11.onmessage = null
+                    currentResolve = null
+                    resolve({ evaluation, topMoves, best11 })
+                }
+
+                if (runsf11) {
+                    sf11.postMessage('stop')
+                    // Wait for sf11's own bestmove before handing its onmessage
+                    // slot to the next analyzePosition call — otherwise a late
+                    // response can land in the wrong call and clobber best11.
+                    const waitForSf11 = new Promise((res) => {
+                        const onSf11Stop = (i) => {
+                            if (typeof i.data === 'string' && i.data.startsWith('bestmove')) {
+                                sf11.removeEventListener('message', onSf11Stop)
+                                res()
+                            }
+                        }
+                        sf11.addEventListener('message', onSf11Stop)
+                        setTimeout(() => {
+                            sf11.removeEventListener('message', onSf11Stop)
+                            res()
+                        }, 100)
+                    })
+                    waitForSf11.then(finish)
+                } else {
+                    finish()
+                }
             }
         }
 
@@ -168,7 +196,7 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
         sf.postMessage(`go depth ${depth}`)
         if (runsf11) {
             sf11.postMessage(moves.length > 0 ? `position startpos moves ${moves.join(" ")}` : "position startpos")
-            sf11.postMessage(`go depth 6`)
+            sf11.postMessage(`go depth 9`)
         }
     })
 }
@@ -178,7 +206,7 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
 
     const [isBook, before] = await Promise.all([
         isBookMove(movesList, move),
-        analyzePosition(movesList, 10, null, true)
+        analyzePosition(movesList, 12, null, true)
     ])
 
     if (analysisId !== myId || !before) return null

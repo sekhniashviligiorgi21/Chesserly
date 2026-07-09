@@ -45,11 +45,22 @@
   const bestChess = new Chess()
   const thirdChess = new Chess()
 
+  // Persist the user's chosen engine depth across route/component remounts
+  // (Analysis.vue gets recreated whenever the router query changes, e.g. when
+  // importing a game from Review.vue, which used to reset this back to 10)
+  const DEPTH_STORAGE_KEY = 'chesslab_targetDepth'
+  function loadStoredDepth() {
+    const stored = Number(localStorage.getItem(DEPTH_STORAGE_KEY))
+    return stored >= 10 && stored <= 30 ? stored : 10
+  }
+
   const moveData = shallowRef(null)
   const boardAPI = shallowRef(null)
   const isAnalyzing = ref(false)
+  const isImporting = ref(false)
+  const importProgress = ref({ current: 0, total: 0 })
   const currentDepth = ref(10)
-  const targetDepth = ref(10)
+  const targetDepth = ref(loadStoredDepth())
   const height = ref(47.75)
   const cp = ref(0)
   const rotate = ref(0)
@@ -506,7 +517,10 @@
     )
   }
 
-  function onDepthChange() { getAccuracy() }
+  function onDepthChange() {
+    localStorage.setItem(DEPTH_STORAGE_KEY, String(targetDepth.value))
+    getAccuracy()
+  }
 
   function formatEval(evalObj) {
     if (!evalObj) return ""
@@ -687,6 +701,7 @@
       const currentTime = Date.now()
 
       if (event.repeat) return
+      if (isImporting.value) return // don't let the user jump around the tree while the engine is chewing through an imported game
 
       switch (event.key) {
           case 'ArrowLeft':
@@ -752,13 +767,20 @@
 
   // Game report logic
   async function loadImportedGame(uciList) {
-    for (const uci of uciList) {
-      const result = applyUciMove(uci)
-      if (!result) break
-      boardAPI.value.setPosition(chess.fen())
-      await getAccuracy()
+    isImporting.value = true
+    importProgress.value = { current: 0, total: uciList.length }
+    try {
+      for (const uci of uciList) {
+        const result = applyUciMove(uci)
+        if (!result) break
+        boardAPI.value.setPosition(chess.fen())
+        await getAccuracy()
+        importProgress.value.current++
+      }
+      goToStart()
+    } finally {
+      isImporting.value = false
     }
-    goToStart()
   }
 
   async function tryLoadImportedGame() {
@@ -821,6 +843,11 @@
     return { white: finalize(white), black: finalize(black) }
   })
 
+  const importProgressPercent = computed(() => {
+    if (!importProgress.value.total) return 0
+    return Math.round((importProgress.value.current / importProgress.value.total) * 100)
+  })
+
 </script>
 
 <template>
@@ -832,6 +859,23 @@
     v-model:showBestArrow="showBestArrow"
     @depthChanged="onDepthChange"
   />
+
+  <Transition name="loading-fade">
+    <div v-if="isImporting" class="analysis-loading-overlay">
+      <div class="loading-content">
+        <div class="loading-spinner">
+          <div class="spinner-ring"></div>
+          <div class="spinner-ring"></div>
+          <div class="spinner-ring"></div>
+        </div>
+        <p class="loading-title">Analyzing Game</p>
+        <p class="loading-subtitle">Move {{ importProgress.current }} / {{ importProgress.total }} · Depth {{ targetDepth }}</p>
+        <div class="loading-progress-bar">
+          <div class="loading-progress-fill" :style="{ width: importProgressPercent + '%' }"></div>
+        </div>
+      </div>
+    </div>
+  </Transition>
 
   <div class="grid-layout">
     <Title class="title-slot"/>
@@ -882,11 +926,11 @@
         </div>
         
         <div class="boardtools">
-          <button class="jumpstart" @click="goToStart" :disabled="currentNode.parent === null" title="Jump to start">⏮</button>
-          <button class="undo" @click="undoAccuracy" title="previous" :disabled="currentNode.parent === null">↶</button>
+          <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start">⏮</button>
+          <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null">↶</button>
           <button class="reverse" @click="flipBoard" title="flip board">↳↰</button>
-          <button class="redo" title="next" @click="redoAccuracy" :disabled="currentNode.children.length === 0">↷</button>
-          <button class="jumpend" @click="goToEnd" :disabled="currentNode.children.length === 0" title="Jump to end">⏭</button>
+          <button class="redo" title="next" @click="redoAccuracy" :disabled="isImporting || currentNode.children.length === 0">↷</button>
+          <button class="jumpend" @click="goToEnd" :disabled="isImporting || currentNode.children.length === 0" title="Jump to end">⏭</button>
           <button class="reset" @click="resetAccuracy" title="reset">🗘</button>
         </div>
       </div>
@@ -1348,6 +1392,105 @@
   }
 
   @keyframes thinkingPulse { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.15); } }
+
+  /* --- Import / Analysis Loading Overlay --- */
+  .analysis-loading-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 10, 6, 0.25);
+    backdrop-filter: blur(4px) saturate(105%);
+    -webkit-backdrop-filter: blur(4px) saturate(105%);
+  }
+
+  .loading-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 2rem 2.5rem;
+    background: linear-gradient(145deg, rgba(94, 60, 32, 0.92), rgba(45, 28, 15, 0.92));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5);
+  }
+
+  .loading-spinner {
+    position: relative;
+    width: 64px;
+    height: 64px;
+  }
+
+  .spinner-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 3px solid transparent;
+    border-top-color: #d9b382;
+    animation: spinRing 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  }
+
+  .spinner-ring:nth-child(2) {
+    inset: 8px;
+    border-top-color: #a8d97a;
+    animation-duration: 1.6s;
+    animation-direction: reverse;
+  }
+
+  .spinner-ring:nth-child(3) {
+    inset: 16px;
+    border-top-color: #f4f0e3;
+    animation-duration: 2s;
+  }
+
+  @keyframes spinRing { to { transform: rotate(360deg); } }
+
+  .loading-title {
+    font-family: serif;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-size: 1.05rem;
+    margin: 0;
+    text-align: center;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  }
+
+  .loading-subtitle {
+    font-family: "JetBrains Mono", monospace;
+    color: rgba(244, 240, 227, 0.8);
+    font-size: 0.82rem;
+    margin: 0;
+    text-align: center;
+  }
+
+  .loading-progress-bar {
+    width: 180px;
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+    margin-top: 0.2rem;
+  }
+
+  .loading-progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #d9b382, #a8d97a);
+    transition: width 0.3s ease;
+  }
+
+  .loading-fade-enter-active, .loading-fade-leave-active {
+    transition: opacity 0.35s ease;
+  }
+
+  .loading-fade-enter-from, .loading-fade-leave-to {
+    opacity: 0;
+  }
 
   .movehistory {
     font-family: serif;

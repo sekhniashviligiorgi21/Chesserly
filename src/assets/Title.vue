@@ -31,14 +31,12 @@
   	if (route.path === '/vsComputer') return 'computer'
   	return 'analyze'
   })
-
-
 </script>
 
 
 <template>
   <div class="title-container">
-    <h1 class="title">♔ ChessLab</h1>
+    <h1 class="title">♔ ChessErrly</h1>
 
     <button
       class="btn"
@@ -56,17 +54,23 @@
       🔎 Analyse
     </button>
 
+    <!-- Disabled VS Computer -->
     <button
-      class="btn"
+      class="btn tooltip-btn"
       :style="{ background: `linear-gradient(${bgColor('computer')})` }"
       @click="gameClick()"
+      disabled
+      data-tooltip="Coming soon..."
     >
       🤖 VS Computer
     </button>
 
+    <!-- Disabled Puzzles -->
     <button
-      class="btn"
+      class="btn tooltip-btn"
       :style="{ background: `linear-gradient(${bgColor('puzzles')})` }"
+      disabled
+      data-tooltip="Coming soon..."
     >
       🧩 Puzzles
     </button>
@@ -127,13 +131,12 @@
 		box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
 	}
 
-
-	button:hover {
+	button:hover:not(:disabled) {
 		transform: translateY(-2px) scale(1.03);
 		box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
 	}
 
-	button:active {
+	button:active:not(:disabled) {
 		transform: translateY(0) scale(0.99);
 		box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
 	}
@@ -141,6 +144,62 @@
 	button:focus-visible {
 		outline: 2px solid #faedcd;
 		outline-offset: 3px;
+	}
+
+	/* Styling for disabled states */
+	button:disabled {
+		cursor: not-allowed;
+		opacity: 0.6;
+		transform: none !important;
+		box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+	}
+
+	/* Instant Tooltip Implementation */
+	.tooltip-btn {
+		position: relative;
+	}
+
+	/* The tooltip box */
+	.tooltip-btn::after {
+		content: attr(data-tooltip);
+		position: absolute;
+		bottom: 115%;
+		left: 50%;
+		transform: translateX(-50%);
+		background-color: rgba(0, 0, 0, 0.85);
+		color: #fff;
+		padding: 6px 10px;
+		border-radius: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		white-space: nowrap;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0s; /* 0s ensures it shows up instantly */
+		box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+		z-index: 10;
+	}
+
+	/* Tiny arrow below the tooltip box */
+	.tooltip-btn::before {
+		content: "";
+		position: absolute;
+		bottom: 100%;
+		left: 50%;
+		transform: translateX(-50%);
+		border-width: 6px;
+		border-style: solid;
+		border-color: rgba(0, 0, 0, 0.85) transparent transparent transparent;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0s;
+		z-index: 10;
+	}
+
+	/* Trigger tooltip instantly on hover */
+	.tooltip-btn:hover::after,
+	.tooltip-btn:hover::before {
+		opacity: 1;
 	}
 
 	@media (max-width: 767px) {
@@ -164,6 +223,10 @@
 	    margin-top: 0;
 	    flex: 1 1 auto;
 	    min-width: 6rem;
+	  }
+	  /* Optional: Adjust tooltip position for smaller mobile layouts so they don't clip */
+	  .tooltip-btn::after {
+		bottom: 125%;
 	  }
 	}
 </style>
