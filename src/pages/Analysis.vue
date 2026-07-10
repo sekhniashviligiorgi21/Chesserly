@@ -6,7 +6,7 @@
   import Title from "../assets/Title.vue"
   import SettingsPanel from "../assets/SettingsPanel.vue"
   import { startEngine, getEvaluation, cancelAnalysis } from "../engine/engine.js"
-  import { useRoute } from 'vue-router'
+  import { useRoute, useRouter } from 'vue-router'
 
   // Flag gates for preventing startup racing
   let boardReady = false
@@ -36,6 +36,7 @@
 
   // State
   const route = useRoute()
+  const router = useRouter()
   const isSettingsOpen = ref(false)
   const isFlipped = computed(() => (rotate.value / 180) % 2 === 1)
 
@@ -59,6 +60,7 @@
   const isAnalyzing = ref(false)
   const isImporting = ref(false)
   const importProgress = ref({ current: 0, total: 0 })
+  let importCancelled = false
   const currentDepth = ref(10)
   const targetDepth = ref(loadStoredDepth())
   const height = ref(47.75)
@@ -798,15 +800,17 @@
   // Game report logic
   async function loadImportedGame(uciList) {
     isImporting.value = true
+    importCancelled = false
     importProgress.value = { current: 0, total: uciList.length }
     try {
       for (const uci of uciList) {
+        if (importCancelled) break
         const result = applyUciMove(uci)
         if (!result) break
         await getAccuracy()
         importProgress.value.current++
       }
-      goToStart()
+      if (!importCancelled) goToStart()
     } finally {
       isImporting.value = false
     }
@@ -817,6 +821,19 @@
       const importedUciList = route.query.moves.split('-')
       await loadImportedGame(importedUciList)
     }
+  }
+
+  // Cancels an in-progress import/review: stops the engine, halts the
+  // move-by-move loop in loadImportedGame, resets the board back to a clean
+  // slate, and strips the imported game out of the URL so a refresh or
+  // back-nav doesn't reload it.
+  async function cancelImport() {
+    importCancelled = true
+    await cancelAnalysis()
+    isImporting.value = false
+    resetAccuracy()
+    hasPlayerInfo.value = false
+    router.replace({ path: '/', query: {} })
   }
 
   const classificationOrder = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'blunder']
@@ -902,6 +919,11 @@
         <div class="loading-progress-bar">
           <div class="loading-progress-fill" :style="{ width: importProgressPercent + '%' }"></div>
         </div>
+        <div class="loading-tips">
+          <p class="loading-tip">Review stuck? A quick page refresh usually fixes it.</p>
+          <p class="loading-tip">Feels slow? Try lowering the engine depth in Settings.</p>
+        </div>
+        <button class="cancel-import-btn" @click="cancelImport">Cancel review</button>
       </div>
     </div>
   </Transition>
@@ -1445,6 +1467,7 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 18px;
     box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5);
+    max-width: min(90vw, 22rem);
   }
 
   .loading-spinner {
@@ -1511,6 +1534,43 @@
     border-radius: 999px;
     background: linear-gradient(90deg, #d9b382, #a8d97a);
     transition: width 0.3s ease;
+  }
+
+  .loading-tips {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    width: 100%;
+  }
+
+  .loading-tip {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.78rem;
+    color: rgba(244, 240, 227, 0.65);
+    text-align: center;
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  .cancel-import-btn {
+    margin-top: 0.5rem;
+    padding: 0.55rem 1.3rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 107, 107, 0.35);
+    background: rgba(255, 60, 60, 0.12);
+    color: #ffb0a8;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+
+  .cancel-import-btn:hover {
+    background: rgba(255, 60, 60, 0.22);
+    border-color: rgba(255, 107, 107, 0.55);
   }
 
   .loading-fade-enter-active, .loading-fade-leave-active {
