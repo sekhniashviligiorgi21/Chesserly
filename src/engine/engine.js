@@ -223,28 +223,6 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
     const afterMoves = move ? [...movesList, move] : movesList
     const side_to_move = afterMoves.length % 2 === 1 ? "w" : "b"
 
-    // Book moves don't need the expensive full-depth search on afterMoves —
-    // we already know the classification, so skip straight to a result built
-    // from the cheap depth-5 "before" data. This is the main win during import,
-    // where a big chunk of early moves are typically book moves.
-    if (move && isBook) {
-        const bookResult = {
-            depth: 50,
-            move_played: move,
-            best_move,
-            eval: eval_before,
-            excellent_eval: null,
-            third_eval: null,
-            move_accuracy: "book",
-            best_line: top_moves[0]?.line ?? [],
-            excellent_line: top_moves[1]?.line ?? [],
-            third_line: top_moves[2]?.line ?? [],
-            moves_list: afterMoves,
-        }
-        if (onUpdate) onUpdate(bookResult)
-        return bookResult
-    }
-
     function buildResult(eval_after, topMovesAfter, currentDepth) {
         const best_line = topMovesAfter[0]?.line ?? []
         const excellent_line = topMovesAfter[1]?.line ?? []
