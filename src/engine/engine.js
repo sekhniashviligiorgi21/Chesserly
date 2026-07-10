@@ -201,24 +201,13 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
     })
 }
 
-export async function getEvaluation(move, movesList, depth, onUpdate = null, priorAnalysis = null) {
+export async function getEvaluation(move, movesList, depth, onUpdate = null) {
     const myId = analysisId
 
-    let isBook, before
-    if (priorAnalysis && priorAnalysis.raw) {
-        // The "before" position for this move is the exact same position as
-        // the previous move's "after" position — reuse it instead of paying
-        // for a redundant depth-5 + SF11 search on every move in a sequential
-        // import. Only isBookMove still needs to run fresh (cheap network call,
-        // and depends on the specific move being played).
-        before = priorAnalysis.raw
-        isBook = await isBookMove(movesList, move)
-    } else {
-        ;[isBook, before] = await Promise.all([
-            isBookMove(movesList, move),
-            analyzePosition(movesList, 5, null, true)
-        ])
-    }
+    const [isBook, before] = await Promise.all([
+        isBookMove(movesList, move),
+        analyzePosition(movesList, 5, null, true)
+    ])
 
     if (analysisId !== myId || !before) return null
 
@@ -378,10 +367,5 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, pri
     )
     if (!afterFinal) return null
 
-    const result = buildResult(afterFinal.evaluation, afterFinal.topMoves, depth)
-    // Expose the raw SF18/SF11 "after" data so the *next* move in a sequential
-    // import can reuse it as its "before" analysis instead of recomputing the
-    // same position from scratch.
-    result.raw = afterFinal
-    return result
+    return buildResult(afterFinal.evaluation, afterFinal.topMoves, depth)
 }

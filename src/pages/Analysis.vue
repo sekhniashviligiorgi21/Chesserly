@@ -769,37 +769,25 @@
   async function loadImportedGame(uciList) {
     isImporting.value = true
     importProgress.value = { current: 0, total: uciList.length }
-    let priorAnalysis = null
     try {
       for (const uci of uciList) {
         const result = applyUciMove(uci)
         if (!result) break
-
-        const evalResult = await getEvaluation(
-          uci,
-          movesListUCI.value.slice(0, -1),
-          targetDepth.value,
-          null,
-          priorAnalysis
-        )
-
-        if (evalResult) {
-          moveData.value = evalResult
-          lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
-          lastMoveAccuracy.value = evalResult.move_accuracy
-          currentNode.value.accuracy = evalResult.move_accuracy
-          currentDepth.value = evalResult.depth
-          treeVersion.value++
-          priorAnalysis = evalResult
-        }
-
+        await getAccuracy()
         importProgress.value.current++
       }
       goToStart()
     } finally {
       isImporting.value = false
     }
-}
+  }
+
+  async function tryLoadImportedGame() {
+    if (boardReady && engineReady && route.query.moves) {
+      const importedUciList = route.query.moves.split('-')
+      await loadImportedGame(importedUciList)
+    }
+  }
 
   const classificationOrder = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'blunder']
 
