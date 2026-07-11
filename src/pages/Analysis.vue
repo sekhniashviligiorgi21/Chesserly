@@ -1,5 +1,5 @@
 <script setup>
-  import { shallowRef, ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+  import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
   import { Chess } from 'chess.js'
   import { TheChessboard } from 'vue3-chessboard'
   import 'vue3-chessboard/style.css'
@@ -16,6 +16,8 @@
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('click', closeContextMenu)
     window.addEventListener('scroll', closeContextMenu, true)
+    reportTitle.value.style.backgroundColor = passiveColor.value
+    explorerTitle.value.style.backgroundColor = passiveColor.value
     await startEngine();
     engineReady = true
     if (!route.query.moves){
@@ -36,7 +38,7 @@
   // State
   const route = useRoute()
   const router = useRouter()
-  const isSettingsOpen = shallowRef(false)
+  const isSettingsOpen = ref(false)
   const isFlipped = computed(() => (rotate.value / 180) % 2 === 1)
 
   const chess = new Chess()
@@ -46,6 +48,8 @@
   const thirdChess = new Chess()
 
   // Persists the user's chosen engine depth across route/component remounts
+  // (Analysis.vue gets recreated whenever the router query changes, e.g. when
+  // importing a game from Review.vue, which used to reset this back to 10)
   const DEPTH_STORAGE_KEY = 'chesslab_targetDepth'
   function loadStoredDepth() {
     const stored = Number(localStorage.getItem(DEPTH_STORAGE_KEY))
@@ -54,58 +58,52 @@
 
   const moveData = shallowRef(null)
   const boardAPI = shallowRef(null)
-  const isAnalyzing = shallowRef(false)
-  const isImporting = shallowRef(false)
-  const importProgress = shallowRef({ current: 0, total: 0 })
+  const isAnalyzing = ref(false)
+  const isImporting = ref(false)
+  const importProgress = ref({ current: 0, total: 0 })
   let importCancelled = false
-  const currentDepth = shallowRef(10)
-  const targetDepth = shallowRef(loadStoredDepth())
-  const height = shallowRef(47.75)
-  const cp = shallowRef(0)
-  const rotate = shallowRef(0)
-  const isAccuracy = shallowRef("")
-  const color = shallowRef("")
-  const sanLine = shallowRef([])
-  const bestMoveSan = shallowRef('')
-  const excellentSanLine = shallowRef([])
-  const treeVersion = shallowRef(0)
-  const movesListUCI = shallowRef([])
-  const lastMoveSquare = shallowRef(null)
-  const lastMoveAccuracy = shallowRef(null)
-  
-  // Corrected Template Refs
+  const currentDepth = ref(10)
+  const targetDepth = ref(loadStoredDepth())
+  const height = ref(47.75)
+  const cp = ref(0)
+  const rotate = ref(0)
+  const isAccuracy = ref("")
+  const color = ref("")
+  const sanLine = ref([])
+  const bestMoveSan = ref('')
+  const excellentSanLine = ref([])
+  const treeVersion = ref(0)
+  const movesListUCI = ref([])
+  const lastMoveSquare = ref(null)
+  const lastMoveAccuracy = ref(null)
   const boardRef = ref(null)
   const movesListRef = ref(null)
-  
-  const thirdSanLine = shallowRef([])
-  const soundOn = shallowRef(true)
-  const showBestArrow = shallowRef(true)
-  const bestArrowSquares = shallowRef(null) 
-  const toastMessage = shallowRef('')
-  const activeTab = shallowRef('moves')
-  const contextMenu = shallowRef({ visible: false, x: 0, y: 0, nodeId: null })
+  const thirdSanLine = ref([])
+  const soundOn = ref(true)
+  const showBestArrow = ref(true)
+  const bestArrowSquares = ref(null) 
+  const toastMessage = ref('')
+  const activeTab = ref('moves')
+  const explorerTitle = ref(null)
+  const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
 
-  // Colors for Tab Navigation
-  const activeColor = shallowRef('#5e3c20')
-  const passiveColor = shallowRef('#8d5b33')
-
-  // Imported player info
-  const whiteName = shallowRef('White')
-  const blackName = shallowRef('Black')
-  const whiteRating = shallowRef(null)
-  const blackRating = shallowRef(null)
-  const hasPlayerInfo = shallowRef(false)
+  // Imported player info (passed via router query from Review.vue)
+  const whiteName = ref('White')
+  const blackName = ref('Black')
+  const whiteRating = ref(null)
+  const blackRating = ref(null)
+  const hasPlayerInfo = ref(false)
 
   // lichess opening explorer (masters database)
   const LICHESS_TOKEN = import.meta.env.VITE_LICHESS_TOKEN
-  const opening = shallowRef("")
-  const openingEco = shallowRef("")
-  const explorerStats = shallowRef(null)     
-  const explorerMoves = shallowRef([])       
-  const explorerLoading = shallowRef(false)
-  const explorerError = shallowRef("")
+  const opening = ref("")
+  const openingEco = ref("")
+  const explorerStats = ref(null)     // aggregate totals for current position: { white, draws, black, total }
+  const explorerMoves = ref([])       // per-move breakdown: [{ san, uci, total, white, draws, black }]
+  const explorerLoading = ref(false)
+  const explorerError = ref("")
 
-  async function importLichessExplorer()){
+  async function importLichessExplorer(){
     explorerLoading.value = true
     explorerError.value = ""
 
@@ -189,6 +187,7 @@
     }
   }
 
+  // Clicking a row in the explorer plays that move on the board
   function playExplorerMove(uci) {
     const result = applyUciMove(uci)
     if (!result) return
@@ -197,6 +196,7 @@
     treeVersion.value++
     getAccuracy()
   }
+
 
   if (route.query.white || route.query.black) {
     hasPlayerInfo.value = true
@@ -218,6 +218,7 @@
       : { name: whiteName.value, rating: whiteRating.value, side: 'white' }
   ))
 
+
   let longPressTimer = null
   let longPressTriggered = false
   let toastTimeout = null
@@ -231,12 +232,13 @@
     uci: null,
     fen: chess.fen(),
     accuracy: null,
-    analysisData: null, 
+    analysisData: null, // New cache property
     parent: null,
     children: []
   }
 
   let nodeIdCounter = 1
+
   const nodeMap = { 0: moveTree }
   const currentNode = shallowRef(moveTree)
 
@@ -303,19 +305,41 @@
     return rows
   })
 
-  // Cleaned up Tab updates (manual DOM code removed)
-  function changeActiveToMoves(){ activeTab.value = 'moves' }
-  function changeActiveToReport(){ activeTab.value = 'report' }
-  function changeActiveToExplorer(){ activeTab.value = 'explorer' }
+  const activeColor = ref('#5e3c20')
+  const passiveColor = ref('#8d5b33')
+  const movesTitle = ref(null)
+  const reportTitle = ref(null)
+
+  function changeActiveToMoves(){
+    activeTab.value = 'moves'
+    if (movesTitle.value) movesTitle.value.style.backgroundColor = activeColor.value
+    if (reportTitle.value) reportTitle.value.style.backgroundColor = passiveColor.value
+    if (explorerTitle.value) explorerTitle.value.style.backgroundColor = passiveColor.value
+  }
+
+  function changeActiveToReport(){
+    activeTab.value = 'report'
+    if (reportTitle.value) reportTitle.value.style.backgroundColor = activeColor.value
+    if (movesTitle.value) movesTitle.value.style.backgroundColor = passiveColor.value
+    if (explorerTitle.value) explorerTitle.value.style.backgroundColor = passiveColor.value
+  }
+
+  function changeActiveToExplorer(){
+    activeTab.value = 'explorer'
+    if (explorerTitle.value) explorerTitle.value.style.backgroundColor = activeColor.value
+    if (movesTitle.value) movesTitle.value.style.backgroundColor = passiveColor.value
+    if (reportTitle.value) reportTitle.value.style.backgroundColor = passiveColor.value
+  }
 
   function deleteMove(nodeId) {
     const node = nodeMap[nodeId]
-    if (!node || node.parent === null) return 
+    if (!node || node.parent === null) return // can't delete the root
 
     const parent = node.parent
     const idx = parent.children.indexOf(node)
     if (idx !== -1) parent.children.splice(idx, 1)
 
+    // collect this node + all its descendants so we can purge them from nodeMap
     function collectIds(n, ids) {
       ids.push(n.id)
       for (const child of n.children) collectIds(child, ids)
@@ -327,6 +351,7 @@
     for (const id of idsToRemove) delete nodeMap[id]
 
     if (currentWasRemoved) {
+      // board was sitting somewhere inside the deleted line — snap back to the parent
       jumpToNode(parent.id)
     } else {
       treeVersion.value++
@@ -344,13 +369,20 @@
     }
   }
 
-  function closeContextMenu() { contextMenu.value.visible = false }
-  function openContextMenu(event, nodeId) { showContextMenu(event.clientX, event.clientY, nodeId) }
+  function closeContextMenu() {
+    contextMenu.value.visible = false
+  }
+
+  function openContextMenu(event, nodeId) {
+    showContextMenu(event.clientX, event.clientY, nodeId)
+  }
+
   function handleDeleteFromMenu() {
     if (contextMenu.value.nodeId !== null) deleteMove(contextMenu.value.nodeId)
     closeContextMenu()
   }
 
+  // Long-press for mobile
   function handleTouchStart(event, nodeId) {
     longPressTriggered = false
     longPressTimer = setTimeout(() => {
@@ -361,9 +393,10 @@
     }, 500)
   }
 
-   Kakao
+  function cancelLongPress() {
+    clearTimeout(longPressTimer)
+  }
 
-  function cancelLongPress() { clearTimeout(longPressTimer) }
   function handleCellClick(nodeId) {
     if (longPressTriggered) {
       longPressTriggered = false
@@ -372,6 +405,7 @@
     jumpToNode(nodeId)
   }
 
+  // Audio Context management safely wrapped inside an explicit check
   function ensureAudioCtx() {
     if (!audioCtx) {
       const Ctx = window.AudioContext || window.webkitAudioContext
@@ -413,17 +447,21 @@
     else playSound('move')
   }
 
+  // Watchers to trigger drawing immediately if toggled from modal
   watch(showBestArrow, (val) => {
     if (!val && boardAPI.value) boardAPI.value.hideMoves()
     else drawBestArrow()
   })
 
+  // Automatically fetches explorer data when the current node (position) changes
   watch(currentNode, () => {
+    // Only fetches if the explorer tab is active to save API requests
     if (activeTab.value === 'explorer') {
       importLichessExplorer()
     }
   }, { immediate: true })
 
+  // Triggers it immediately when the user switches to the explorer tab
   watch(activeTab, (newTab) => {
     if (newTab === 'explorer') {
       importLichessExplorer()
@@ -448,6 +486,7 @@
   function copyPGN() { copyToClipboard(chess.pgn() || '(no moves yet)', 'PGN') }
   function copyFEN() { copyToClipboard(chess.fen(), 'FEN') }
 
+  // Arrow Drawing Logic
   function drawBestArrow() {
     if (!showBestArrow.value || !boardAPI.value || !bestArrowSquares.value) return
     const { from, to } = bestArrowSquares.value
@@ -461,6 +500,8 @@
     boardReady = true
     await tryLoadImportedGame()
   }
+
+  
 
   async function handleBothMoves(move) {
     const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
@@ -571,10 +612,12 @@
   }
 
   async function getAccuracy() {
-    await cancelAnalysis() 
+    await cancelAnalysis() // Stops any running analysis first
     
+    // --- CACHE CHECK ---
     const cached = currentNode.value.analysisData
     if (cached && cached.depth >= targetDepth.value) {
+      // Restore from cache if the stored depth is sufficient
       moveData.value = cached
       lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
       lastMoveAccuracy.value = cached.move_accuracy
@@ -583,6 +626,7 @@
       isAnalyzing.value = false
       if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
       
+      // Trigger UI updates
       if (typeof evalSize === "function") evalSize()
       if (typeof moveDescription === "function") moveDescription()
       if (typeof sanBest === "function") sanBest()
@@ -592,7 +636,7 @@
       drawBestArrow()
       
       treeVersion.value++
-      return 
+      return // Exits the function to prevent the engine from running
     }
 
     isAnalyzing.value = true
@@ -609,7 +653,7 @@
         lastMoveAccuracy.value = result.move_accuracy
         
         currentNode.value.accuracy = result.move_accuracy
-        currentNode.value.analysisData = result 
+        currentNode.value.analysisData = result // <-- SAVE TO CACHE
         
         currentDepth.value = result.depth
         isAnalyzing.value = false
@@ -648,6 +692,7 @@
           return
       }
       cp.value = Math.max(-800, Math.min(800, evalValue))
+      // Scales exactly from 0% (full white) to 100% (full black)
       height.value = 50 - (cp.value / 800) * 50
   }
 
@@ -755,11 +800,16 @@
 
   function squareStyle(square) {
     if (!square) return {}
+
     const file = square.charCodeAt(0) - 97
     const rank = parseInt(square[1]) - 1
     const isFlipped = (rotate.value / 180) % 2 === 1
+
     const col = isFlipped ? 7 - file : file
     const row = isFlipped ? rank : 7 - rank
+
+    // Each square is exactly 12.5% of the board's width/height.
+    // (col + 1) aligns to the right edge of the square; row aligns to the top edge.
     return {
         position: 'absolute',
         left: `${(col + 1) * 12.5}%`,
@@ -805,7 +855,7 @@
       const currentTime = Date.now()
 
       if (event.repeat) return
-      if (isImporting.value) return 
+      if (isImporting.value) return // doesn't let the user jump around the tree while the engine is going through an imported game
 
       switch (event.key) {
           case 'ArrowLeft':
@@ -869,6 +919,7 @@
       getAccuracy()
   }
 
+  // Game report logic
   async function loadImportedGame(uciList) {
     isImporting.value = true
     importCancelled = false
@@ -894,6 +945,10 @@
     }
   }
 
+  // Cancels an in-progress import/review: stops the engine, halts the
+  // move-by-move loop in loadImportedGame, resets the board back to a clean
+  // slate, and strips the imported game out of the URL so a refresh or
+  // back-nav doesn't reload it.
   async function cancelImport() {
     importCancelled = true
     await cancelAnalysis()
@@ -924,6 +979,7 @@
 
   const gameReportStats = computed(() => {
     treeVersion.value
+
     function emptyCounts() {
       return classificationOrder.reduce((acc, key) => ({ ...acc, [key]: 0 }), {})
     }
@@ -936,11 +992,13 @@
 
     while (current) {
       const side = ply % 2 === 1 ? white : black
+
       if (current.accuracy && side.counts.hasOwnProperty(current.accuracy)) {
         side.counts[current.accuracy]++
         side.weightedSum += accuracyWeights[current.accuracy] ?? 0
         side.moveCount++
       }
+
       current = current.children[0] ?? null
       ply++
     }
@@ -957,9 +1015,11 @@
     if (!importProgress.value.total) return 0
     return Math.round((importProgress.value.current / importProgress.value.total) * 100)
   })
+
 </script>
 
 <template>
+  <!-- Main Settings Integration -->
   <SettingsPanel 
     v-model:isOpen="isSettingsOpen"
     v-model:targetDepth="targetDepth"
@@ -993,7 +1053,6 @@
   <div class="grid-layout">
     <Title class="title-slot"/>
     <div class="board-area">
-      <!-- Fixed Template Ref Configuration -->
       <div class="board-wrapper" ref="boardRef">
         <div class="player-bar" v-if="hasPlayerInfo">
           <span class="player-color-dot" :class="topPlayer.side"></span>
@@ -1003,6 +1062,7 @@
         
         <div class="board-row">
           <div class="board-col">
+            <!-- Added specific class to handle overflow bounds -->
             <TheChessboard 
               class="game-board"
               @move="handleBothMoves" 
@@ -1093,23 +1153,11 @@
       </div>
       <div class="moves">
         
-        <!-- Updated to Tab Bindings Declaratively using :style logic -->
+        <!-- UPDATED TABS SECTION -->
         <div class="movesButtons">
-          <button 
-            class="movehistory" 
-            :style="{ backgroundColor: activeTab === 'moves' ? activeColor : passiveColor }"
-            @click="changeActiveToMoves()"
-          >Moves</button>
-          <button 
-            class="movehistory" 
-            :style="{ backgroundColor: activeTab === 'report' ? activeColor : passiveColor }"
-            @click="changeActiveToReport()"
-          >Report</button>
-          <button 
-            class="movehistory" 
-            :style="{ backgroundColor: activeTab === 'explorer' ? activeColor : passiveColor }"
-            @click="changeActiveToExplorer()"
-          >Explorer</button>
+          <button class="movehistory" @click="changeActiveToMoves()" ref="movesTitle">Moves</button>
+          <button class="movehistory" @click="changeActiveToReport()" ref="reportTitle">Report</button>
+          <button class="movehistory" @click="changeActiveToExplorer()" ref="explorerTitle">Explorer</button>
         </div>
         
         <!-- MOVES TAB -->
@@ -1263,6 +1311,7 @@
   <Transition name="toast-fade">
     <div v-if="toastMessage" class="toast">{{ toastMessage }}</div>
   </Transition>
+</template>
 
 <style scoped>
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Inter:wght@400;500;600;700&display=swap');
@@ -1288,13 +1337,13 @@
       grid-template-areas:
         "title board"
         "title analysis";
-      gap: 1.5rem;
+      gap: 1rem;
     }
   }
 
   @media (min-width: 1200px) {
     .grid-layout {
-      grid-template-columns: auto 2fr 1.2fr;
+      grid-template-columns: auto 2fr 1fr;
       grid-template-areas: "title board analysis";
       gap: 2rem;
     }
@@ -1313,6 +1362,7 @@
   .board-wrapper {
     position: relative;
     width: 100%;
+    /* Controls the master width for the board, evalbar, AND tools together */
     max-width: min(95vw, 38rem); 
     min-width: 0;
     margin: 0 auto;
@@ -1324,10 +1374,11 @@
     flex: 1 1 auto;
     min-width: 0;
     position: relative;
-    display: flex;             
-    flex-direction: column;    
+    display: flex;             /* Makes the board fit exact bounds */
+    flex-direction: column;    /* Removes invisible trailing vertical space */
   }
 
+  /* Force the library container instance to fit perfectly within the flex column boundaries */
   .game-board {
     width: 100% !important;
     height: auto !important;
@@ -1335,6 +1386,7 @@
     display: block;
   }
 
+  /* Constrain the inner chessground wrapper element to match the layout parent */
   :deep(.cg-wrap) {
     overflow: hidden;
     width: 100% !important;
@@ -1346,7 +1398,7 @@
   .board-row {
     display: flex;
     justify-content: center;
-    gap: 0.75rem; 
+    gap: 0.75rem; /* physical gap separation */
     width: 100%;
   }
 
@@ -1366,37 +1418,37 @@
     flex-direction: column;
     border-radius: 10px;
     overflow: hidden;
-    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5), 0 4px 10px rgba(0,0,0,0.2);
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
   }
 
+  /* --- Player bar (imported game info) --- */
   .player-bar {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.8rem;
-    margin-bottom: 0.4rem;      
+    padding: 0.35rem 0.7rem;
+    margin-bottom: 0.2rem;      /* Tighter gap to the board */
     border-radius: 8px;
-    background: linear-gradient(90deg, rgba(30,30,30,0.6), rgba(0,0,0,0.2));
-    backdrop-filter: blur(4px);
+    background: rgba(0, 0, 0, 0.22);
     color: #f4f0e3;
     font-family: 'Inter', sans-serif;
     font-size: clamp(0.82rem, 1.8vw, 0.95rem);
-    width: 100%;                
+    width: 100%;                /* Forces parallel alignment */
     box-sizing: border-box;
-    border: 1px solid rgba(255, 255, 255, 0.05);
   }
 
+  /* Specific spacing for the bottom player name */
   .player-bar.bottom {
     margin-bottom: 0;
-    margin-top: 0.4rem;         
+    margin-top: 0.2rem;         /* Pulls it up close to the evalbar bottom */
   }
 
   .player-color-dot {
-    width: 0.7rem;
-    height: 0.7rem;
+    width: 0.6rem;
+    height: 0.6rem;
     border-radius: 50%;
     flex-shrink: 0;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
   }
 
   .player-color-dot.white { background: #f4f0e3; }
@@ -1407,7 +1459,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    letter-spacing: 0.3px;
   }
 
   .player-rating {
@@ -1415,181 +1466,134 @@
     font-size: 0.8em;
     color: rgba(244, 240, 227, 0.75);
     margin-left: auto;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.25);
     border-radius: 6px;
-    padding: 0.15rem 0.5rem;
+    padding: 0.05rem 0.4rem;
     flex-shrink: 0;
-  }
-
-  /* --- Improved Custom Scrollbars --- */
-  .moves, .moveslist, .explorer, .line, .secondline {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(220, 224, 200, 0.4) transparent;
-  }
-
-  .moves::-webkit-scrollbar, 
-  .moveslist::-webkit-scrollbar, 
-  .explorer::-webkit-scrollbar, 
-  .line::-webkit-scrollbar, 
-  .secondline::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  .moves::-webkit-scrollbar-track, 
-  .moveslist::-webkit-scrollbar-track, 
-  .explorer::-webkit-scrollbar-track, 
-  .line::-webkit-scrollbar-track, 
-  .secondline::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.1);
-    border-radius: 12px;
-    margin: 4px;
-  }
-
-  .moves::-webkit-scrollbar-thumb, 
-  .moveslist::-webkit-scrollbar-thumb, 
-  .explorer::-webkit-scrollbar-thumb, 
-  .line::-webkit-scrollbar-thumb, 
-  .secondline::-webkit-scrollbar-thumb {
-    background: rgba(220, 224, 200, 0.35);
-    border-radius: 12px;
-    border: 3px solid transparent; 
-    background-clip: padding-box; 
-    transition: background 0.2s ease;
-  }
-
-  .moves::-webkit-scrollbar-thumb:hover, 
-  .moveslist::-webkit-scrollbar-thumb:hover, 
-  .explorer::-webkit-scrollbar-thumb:hover {
-    background: rgba(220, 224, 200, 0.6);
-    border: 3px solid transparent; 
-    background-clip: padding-box;
   }
 
   /* Moves History Layout */
   .moves {
     margin-top: 10px;
-    background: linear-gradient(145deg, #7c4c28, #5a371c);
+    background: linear-gradient(145deg, #8b5a32, #6d4524);
     border-radius: 16px;
     width: 100%;
     max-width: 500px;
     height: clamp(300px, 50vh, 500px);
-    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 2px 4px rgba(255, 255, 255, 0.1);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
     overflow-y: auto;
     overflow-x: hidden;
     box-sizing: border-box;
     border: 1px solid rgba(255, 255, 255, 0.08);
     margin: 0 auto;
-    padding-right: 4px; /* Slight offset for the main container scrollbar */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(194, 197, 170, 0.4) rgba(0, 0, 0, 0.2);
   }
 
-  @media (min-width: 1200px) { .moves { max-width: 24rem; } }
+  @media (min-width: 1200px) { .moves { max-width: 20rem; } }
 
   .moveslist {
     margin: 0 auto;
-    /* Increased right padding to prevent text overlap with scrollbar */
-    padding: 12px 20px 12px 12px; 
+    padding: 12px;
     width: 100%;
     box-sizing: border-box;
-    background: linear-gradient(135deg, rgba(165, 117, 72, 0.9), rgba(125, 85, 48, 0.9));
+    background: linear-gradient(135deg, #a57548, #7d5530);
     border-radius: 14px;
     font-size: clamp(0.9rem, 2vw, 1rem);
-    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    gap: 0.55rem;
     scroll-behavior: smooth;
   }
 
-  .movesButtons {
+  .movesButtons{
     display: flex;
     justify-content: center;
-    gap: 0.6rem;
-    padding: 10px 12px;
+    gap: 0.5rem;
   }
 
   .move-row {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.6rem;
+    gap: 0.5rem;
     align-items: start;
     margin-left: var(--indent, 0rem);
     padding-left: 0.35rem;
     position: relative;
   }
 
-  .move-row.variant { border-left: 3px solid rgba(232, 232, 208, 0.2); }
+  .move-row.variant { border-left: 2px solid rgba(232, 232, 208, 0.16); }
 
   .move-cell {
-    min-height: 2.6rem;
-    padding: 0.55rem 0.8rem;
-    border-radius: 10px;
+    min-height: 2.45rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 12px;
     cursor: pointer;
     color: #f4f0e3;
     font-weight: 500;
-    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+    transition: all 0.15s ease;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    background: rgba(0, 0, 0, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.04);
+    gap: 0.35rem;
+    background: rgba(0, 0, 0, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     box-sizing: border-box;
     overflow: hidden;
+    -webkit-user-select: none;
     user-select: none;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
   }
 
   .move-cell:hover {
-    background: rgba(103, 122, 228, 0.25);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-  }
-
-  .move-cell.active {
-    background: linear-gradient(135deg, rgba(103, 122, 228, 0.5), rgba(103, 122, 228, 0.25));
-    border-color: rgba(220, 228, 255, 0.7);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15), 0 8px 20px rgba(103, 122, 228, 0.35);
+    background: rgba(103, 122, 228, 0.18);
     transform: translateY(-1px);
   }
 
-  .move-cell.variant { color: #dbe4ff; background: rgba(255, 255, 255, 0.08); }
+  .move-cell.active {
+    background: linear-gradient(135deg, rgba(103, 122, 228, 0.42), rgba(103, 122, 228, 0.22));
+    border-color: rgba(220, 228, 255, 0.7);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 18px rgba(103, 122, 228, 0.25);
+  }
+
+  .move-cell.variant { color: #dbe4ff; background: rgba(255, 255, 255, 0.06); }
   .move-cell.empty { pointer-events: none; background: transparent; border-color: transparent; box-shadow: none; }
 
   .move-num {
-    color: rgba(232, 232, 208, 0.8);
-    font-size: 0.75em;
+    color: rgba(232, 232, 208, 0.72);
+    font-size: 0.78em;
     font-weight: 700;
-    padding: 0.2rem 0.5rem;
+    padding: 0.15rem 0.45rem;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.25);
+    background: rgba(0, 0, 0, 0.16);
   }
 
   .move-san-text { font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .acc-badge { width: 22px; height: 22px; border-radius: 50%; margin-left: 2px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3)); }
+  .acc-badge { width: 20px; height: 20px; border-radius: 50%; margin-left: 2px; }
 
   .analysis-container { grid-area: analysis; display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 
   .analyze {
-    border-radius: 16px;
+    border-radius: 15px;
     width: 100%;
     max-width: 500px;
     min-height: 200px;
-    padding-bottom: 1.2rem;
-    background: linear-gradient(145deg, #7c4c28, #5a371c);
+    padding-bottom: 1rem;
+    background: linear-gradient(145deg, #8b5a32, #6d4524);
     box-sizing: border-box;
-    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 2px 4px rgba(255, 255, 255, 0.1);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.08);
     margin: auto;
   }
 
-  @media (min-width: 1200px) { .analyze { max-width: 24rem; } }
+  @media (min-width: 1200px) { .analyze { max-width: 20rem; } }
 
   .analyzis-header {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
-    padding: 1rem 1.2rem 0.5rem;
+    gap: 3rem;
+    padding: 1rem 1rem 0.5rem;
   }
 
   .analyzis {
@@ -1597,32 +1601,31 @@
     color: #f5f5dc;
     font-weight: 700;
     text-transform: uppercase;
-    text-shadow: 1px 2px 4px rgba(0, 0, 0, 0.4);
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
     letter-spacing: 2px;
     font-size: clamp(1.1rem, 2.5vw, 1.4rem);
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.5rem;
     margin: 0;
   }
 
   .settings-btn {
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255,255,255,0.1);
     color: #fff;
-    border-radius: 10px;
-    width: 38px; height: 38px;
+    border-radius: 8px;
+    width: 36px; height: 36px;
     flex-shrink: 0;
     display: flex; justify-content: center; align-items: center;
-    cursor: pointer; transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
-    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    cursor: pointer; transition: all 0.2s ease;
   }
 
-  .settings-btn:hover { background: rgba(0, 0, 0, 0.5); transform: translateY(-2px) scale(1.05); }
+  .settings-btn:hover { background: rgba(0, 0, 0, 0.4); transform: scale(1.05); }
 
   .thinking-dot {
-    width: 0.6rem; height: 0.6rem; border-radius: 50%;
-    background: #6ad13f; box-shadow: 0 0 10px rgba(106, 209, 63, 0.9);
+    width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    background: #6ad13f; box-shadow: 0 0 8px rgba(106, 209, 63, 0.9);
     animation: thinkingPulse 1s ease-in-out infinite;
   }
 
@@ -1636,28 +1639,28 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 10, 6, 0.4);
-    backdrop-filter: blur(6px) saturate(110%);
-    -webkit-backdrop-filter: blur(6px) saturate(110%);
+    background: rgba(15, 10, 6, 0.25);
+    backdrop-filter: blur(4px) saturate(105%);
+    -webkit-backdrop-filter: blur(4px) saturate(105%);
   }
 
   .loading-content {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1rem;
-    padding: 2.5rem 3rem;
-    background: linear-gradient(145deg, rgba(94, 60, 32, 0.95), rgba(45, 28, 15, 0.95));
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 20px;
-    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.6);
-    max-width: min(90vw, 24rem);
+    gap: 0.9rem;
+    padding: 2rem 2.5rem;
+    background: linear-gradient(145deg, rgba(94, 60, 32, 0.92), rgba(45, 28, 15, 0.92));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5);
+    max-width: min(90vw, 22rem);
   }
 
   .loading-spinner {
     position: relative;
-    width: 72px;
-    height: 72px;
+    width: 64px;
+    height: 64px;
   }
 
   .spinner-ring {
@@ -1670,14 +1673,14 @@
   }
 
   .spinner-ring:nth-child(2) {
-    inset: 10px;
+    inset: 8px;
     border-top-color: #a8d97a;
     animation-duration: 1.6s;
     animation-direction: reverse;
   }
 
   .spinner-ring:nth-child(3) {
-    inset: 20px;
+    inset: 16px;
     border-top-color: #f4f0e3;
     animation-duration: 2s;
   }
@@ -1689,8 +1692,8 @@
     color: #f5f5dc;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 2px;
-    font-size: 1.15rem;
+    letter-spacing: 1.5px;
+    font-size: 1.05rem;
     margin: 0;
     text-align: center;
     text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
@@ -1698,20 +1701,19 @@
 
   .loading-subtitle {
     font-family: "JetBrains Mono", monospace;
-    color: rgba(244, 240, 227, 0.85);
-    font-size: 0.85rem;
+    color: rgba(244, 240, 227, 0.8);
+    font-size: 0.82rem;
     margin: 0;
     text-align: center;
   }
 
   .loading-progress-bar {
-    width: 200px;
-    height: 6px;
+    width: 180px;
+    height: 5px;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.35);
     overflow: hidden;
-    margin-top: 0.4rem;
-    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+    margin-top: 0.2rem;
   }
 
   .loading-progress-fill {
@@ -1724,40 +1726,38 @@
   .loading-tips {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
-    padding-top: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
     width: 100%;
   }
 
   .loading-tip {
     font-family: 'Inter', sans-serif;
-    font-size: 0.8rem;
-    color: rgba(244, 240, 227, 0.7);
+    font-size: 0.78rem;
+    color: rgba(244, 240, 227, 0.65);
     text-align: center;
     margin: 0;
-    line-height: 1.5;
+    line-height: 1.4;
   }
 
   .cancel-import-btn {
-    margin-top: 0.8rem;
-    padding: 0.6rem 1.5rem;
-    border-radius: 10px;
-    border: 1px solid rgba(255, 107, 107, 0.4);
-    background: rgba(255, 60, 60, 0.15);
+    margin-top: 0.5rem;
+    padding: 0.55rem 1.3rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 107, 107, 0.35);
+    background: rgba(255, 60, 60, 0.12);
     color: #ffb0a8;
     font-weight: 600;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+    transition: background 0.2s ease, border-color 0.2s ease;
   }
 
   .cancel-import-btn:hover {
-    background: rgba(255, 60, 60, 0.25);
-    border-color: rgba(255, 107, 107, 0.6);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(255, 60, 60, 0.2);
+    background: rgba(255, 60, 60, 0.22);
+    border-color: rgba(255, 107, 107, 0.55);
   }
 
   .loading-fade-enter-active, .loading-fade-leave-active {
@@ -1768,38 +1768,55 @@
     opacity: 0;
   }
 
+  .movehistory {
+    font-family: serif;
+    position: sticky;
+    text-align: center;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin: 20px 0;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 2.5px;
+    padding: 0.5rem 1.5rem;
+    border-radius: 5px;
+    background-color: #5e3c20;
+    border: none;
+    font-size: clamp(1rem, 2vw, 1.2rem);
+  }
+
   .boardtools {
     display: flex;
     gap: 0.75rem;
     justify-content: center;
     align-items: center;
-    min-height: 3.5rem;
+    min-height: 3.2rem;
     width: 100%;  
     box-sizing: border-box;
-    background: linear-gradient(145deg, #7c4c28, #5a371c);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    padding: 0.6rem 1.2rem;
-    border-radius: 12px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-    margin: 0.6rem 0 0 0;  
+    background: linear-gradient(145deg, #8b5a32, #6d4524);
+    border: 2px solid rgba(182, 173, 144, 0.4);
+    padding: 0.5rem 1rem;
+    border-radius: 10px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    margin: 0.4rem 0 0 0;  
     flex-wrap: wrap;
     position: relative;
   }
 
   .reverse, .undo, .redo, .reset, .jumpstart, .jumpend {
-    background: linear-gradient(145deg, #8a5a35, #6b4324);
-    width: clamp(38px, 8vw, 44px);
-    height: clamp(38px, 8vw, 44px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 12px;
+    background-color: #9d6639;
+    width: clamp(35px, 8vw, 40px);
+    height: clamp(35px, 8vw, 40px);
+    border: none;
+    border-radius: 15px;
     font-size: clamp(16px, 4vw, 20px);
     color: #e8e8d0;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+    transition: all 0.2s ease;
     flex-shrink: 0;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.25);
   }
 
+  /* --- Navigation & Control Buttons --- */
   .reverse:disabled, 
   .undo:disabled, 
   .redo:disabled, 
@@ -1807,7 +1824,33 @@
   .jumpend:disabled {
       opacity: 0.4;
       cursor: not-allowed;
-      box-shadow: none;
+  }
+
+  .reversetip, .undotip, .redotip, .resettip {
+      display: none;
+  }
+
+  @media (min-width: 768px) {
+      .reversetip, .undotip, .redotip, .resettip {
+          display: block;
+          opacity: 0;
+          position: absolute;
+          font-size: clamp(14px, 2vw, 17px);
+          padding: 0.5rem;
+          border-radius: 10px;
+          background-color: #242424;
+          margin-top: -4.5rem;
+          transform: translateX(-50%);
+          left: 50%;
+          pointer-events: none;
+      }
+
+      .reverse:hover + .reversetip, 
+      .undo:hover + .undotip, 
+      .redo:hover + .redotip, 
+      .reset:hover + .resettip {
+          animation: fadeIn 0.4s forwards 0.3s;
+      }
   }
 
   .reverse:hover:not(:disabled), 
@@ -1817,14 +1860,18 @@
   .jumpstart:hover:not(:disabled), 
   .jumpend:hover:not(:disabled) {
       background: linear-gradient(145deg, #9d6640, #7d5530);
-      border-color: rgba(232, 232, 208, 0.4);
+      border-color: rgba(232, 232, 208, 0.6);
       box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-      transform: translateY(-2px);
+  }
+
+  @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 0.8; }
   }
 
   .blackeval, .whiteeval {
       width: 100%;
-      transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: all 0.5s ease;
       position: relative;
   }
 
@@ -1837,54 +1884,48 @@
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      font-size: clamp(0.85rem, 1.2vw, 1.05rem);
-      font-weight: 600;
+      font-size: clamp(0.8rem, 1.2vw, 1rem);
+      font-weight: 500;
       color: #fff8ef;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
-      background: rgba(0, 0, 0, 0.4);
-      padding: 0.3rem 0.6rem;
-      border-radius: 8px;
+      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
       backdrop-filter: blur(4px);
       z-index: 10;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
   }
 
-  /* --- Move & Accuracy Data --- */
+/* --- Move & Accuracy Data --- */
   .accuracydescribtion {
-      font-weight: 600;
+      font-weight: 500;
       text-align: center;
-      font-size: clamp(1.05rem, 2.1vw, 1.25rem);
-      margin-top: 1.2rem;
-      padding: 0 1.2rem;
+      font-size: clamp(1rem, 2.1vw, 1.2rem);
+      margin-top: 1rem;
+      padding: 0 1rem;
       word-wrap: break-word;
-      text-shadow: 0 1px 2px rgba(0,0,0,0.5);
   }
 
   .bestmove {
-      color: #6ad13f;
+      color: #41a24e;
       text-align: center;
       font-weight: 600;
-      margin-top: 0.3rem;
-      font-size: clamp(0.95rem, 1vw, 1.15rem);
+      margin-top: 0.1rem;
+      font-size: clamp(0.9rem, 1rem, 1.1rem);
       padding: 0 1rem;
       cursor: pointer;
       text-decoration: underline;
-      transition: color 0.2s ease;
   }
 
-  .bestmove:hover { color: #8aef5f; }
-
-  .move-data { padding: 0 1.2rem; }
+  .move-data { padding: 0 1rem; }
 
   .depthnum {
       font-family: 'Inter', sans-serif;
       text-align: center;
-      color: rgba(245, 245, 220, 0.75);
-      font-size: 0.82rem;
-      font-weight: 700;
+      color: rgba(245, 245, 220, 0.7);
+      font-size: 0.78rem;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 1px;
-      margin: 0.3rem 0 0.8rem;
+      margin: 0.3rem 0 0.5rem;
   }
 
   .line, .secondline {
@@ -1892,29 +1933,27 @@
       display: flex;
       white-space: nowrap;
       align-items: center;
-      gap: 0.6rem;
+      gap: 0.5rem;
       font-size: clamp(0.85rem, 2vw, 1rem);
-      padding: 0.6rem;
-      margin: 10px 0;
+      padding: 0.5rem;
+      margin: 8px 0;
       background: rgba(0, 0, 0, 0.25);
-      border-radius: 12px;
+      border-radius: 10px;
       color: #eae4d8;
-      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5);
+      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
       overflow-x: auto;
-      /* Extra padding at the bottom to accommodate horizontal scrollbar */
-      padding-bottom: 0.8rem; 
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.3)  rgba(0, 0, 0, 0.1); 
   }
 
   .evalnum2, .evalnum3 {
-      font-size: clamp(1.05rem, 2vw, 1.35rem);
+      font-size: clamp(1rem, 2vw, 1.3rem);
       color: #171717;
-      background: linear-gradient(145deg, #747d56, #535a3d);
+      background-color: #606847;
       border-radius: 10px;
       flex-shrink: 0;
-      width: 4.6rem;
+      width: 4.4rem;
       text-align: center;
-      font-weight: 700;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
   }
 
   .board-acc-icon {
@@ -1923,63 +1962,53 @@
       height: 4.5%;
       border-radius: 50%;
       pointer-events: none;
-      filter: drop-shadow(0 4px 8px rgba(0,0,0,0.4));
   }
 
-  .line-move { cursor: pointer; padding: 2px 4px; border-radius: 6px; transition: background 0.2s ease; }
-  .line-move:hover { background: rgba(103, 122, 228, 0.4); }
+  .line-move { cursor: pointer; padding: 0 2px; border-radius: 4px; }
+  .line-move:hover { background: rgba(103, 122, 228, 0.3); }
 
   /* --- Share & Toasts --- */
   .sharebar {
       display: flex;
       justify-content: center;
-      gap: 0.8rem;
-      margin-top: 1.2rem;
+      gap: 0.6rem;
+      margin-top: 0.9rem;
       padding: 0 1rem;
   }
 
   .sharebtn {
-      background: rgba(0, 0, 0, 0.3);
+      background: rgba(0, 0, 0, 0.22);
       color: #f4f0e3;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 10px;
-      padding: 0.5rem 1rem;
-      font-size: 0.85rem;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 0.4rem 0.8rem;
+      font-size: 0.82rem;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
-      box-shadow: 0 4px 10px rgba(0,0,0,0.2);
   }
 
-  .sharebtn:hover { 
-      background: rgba(103, 122, 228, 0.4); 
-      transform: translateY(-2px);
-      box-shadow: 0 6px 14px rgba(103, 122, 228, 0.25);
-  }
+  .sharebtn:hover { background: rgba(103, 122, 228, 0.3); }
 
   .toast {
       position: fixed;
-      bottom: 2rem;
+      bottom: 1.5rem;
       left: 50%;
       transform: translateX(-50%);
-      background: rgba(20, 20, 20, 0.95);
-      backdrop-filter: blur(8px);
+      background: rgba(20, 20, 20, 0.92);
       color: #f4f0e3;
-      padding: 0.8rem 1.5rem;
+      padding: 0.6rem 1.2rem;
       border-radius: 999px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
       z-index: 1000;
-      font-weight: 500;
-      letter-spacing: 0.5px;
   }
 
   .toast-fade-enter-active, .toast-fade-leave-active {
-      transition: opacity 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      transition: opacity 0.25s ease, transform 0.25s ease;
   }
 
   .toast-fade-enter-from, .toast-fade-leave-to {
       opacity: 0;
-      transform: translateX(-50%) translateY(15px);
+      transform: translateX(-50%) translateY(8px);
   }
 
   .context-menu {
@@ -1987,46 +2016,44 @@
     z-index: 2000;
     background: #2a2a2a;
     border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 12px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     overflow: hidden;
-    min-width: 150px;
+    min-width: 140px;
   }
 
   .context-menu-item {
     display: block;
     width: 100%;
-    padding: 0.75rem 1.2rem;
+    padding: 0.65rem 1rem;
     background: transparent;
     border: none;
     color: #f4f0e3;
-    font-size: 0.95rem;
-    font-weight: 500;
+    font-size: 0.9rem;
     text-align: left;
     cursor: pointer;
-    transition: background 0.2s ease;
   }
 
   .context-menu-item.delete { color: #ff6b6b; }
-  .context-menu-item.delete:hover { background: rgba(255, 60, 60, 0.25); }
+  .context-menu-item.delete:hover { background: rgba(255, 60, 60, 0.2); }
 
   .report {
-    padding: 1.2rem;
+    padding: 1rem;
     box-sizing: border-box;
   }
 
   .report-columns {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.8rem;
+    gap: 0.6rem;
   }
 
   .report-col {
     min-width: 0;
-    background: linear-gradient(135deg, rgba(165, 117, 72, 0.9), rgba(125, 85, 48, 0.9));
-    border-radius: 16px;
-    padding: 1rem 0.6rem;
-    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0,0,0,0.2);
+    background: linear-gradient(135deg, #a57548, #7d5530);
+    border-radius: 14px;
+    padding: 0.8rem 0.5rem;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
     box-sizing: border-box;
   }
 
@@ -2034,23 +2061,23 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
     font-family: serif;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 1.5px;
+    letter-spacing: 1.2px;
     color: #f5f5dc;
-    font-size: 0.85rem;
-    margin-bottom: 0.6rem;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+    font-size: 0.78rem;
+    margin-bottom: 0.5rem;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
   }
 
   .side-swatch {
-    width: 0.7rem;
-    height: 0.7rem;
+    width: 0.65rem;
+    height: 0.65rem;
     border-radius: 50%;
     display: inline-block;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
     flex-shrink: 0;
   }
 
@@ -2059,17 +2086,17 @@
 
   .accuracy-score {
     font-family: "JetBrains Mono", monospace;
-    font-size: clamp(1.4rem, 6vw, 2rem);
+    font-size: clamp(1.3rem, 6vw, 1.8rem);
     font-weight: 700;
     color: #a8d97a;
     text-align: center;
-    margin: 0.5rem 0 0.8rem;
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    margin: 0.4rem 0 0.7rem;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   }
 
   .accuracy-score.empty {
     color: rgba(245, 245, 220, 0.4);
-    font-size: 1.3rem;
+    font-size: 1.2rem;
   }
 
   .accuracy-percent {
@@ -2080,30 +2107,30 @@
   .report-row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.4rem;
+    gap: 0.35rem;
+    padding: 0.3rem 0.3rem;
     border-radius: 8px;
-    transition: background 0.2s ease, transform 0.2s ease;
+    transition: background 0.15s ease;
     min-width: 0;
   }
 
   .report-row:hover {
-    background: rgba(0, 0, 0, 0.15);
-    transform: translateX(2px);
+    background: rgba(0, 0, 0, 0.12);
   }
 
-  .report-row.dim { opacity: 0.4; }
+  .report-row.dim {
+    opacity: 0.35;
+  }
 
   .report-row-icon {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     flex-shrink: 0;
-    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
   }
 
   .report-row-label {
     flex: 1;
-    font-size: 0.8rem;
+    font-size: 0.76rem;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2114,60 +2141,58 @@
     font-family: "JetBrains Mono", monospace;
     font-weight: 700;
     color: #f4f0e3;
-    background: rgba(0, 0, 0, 0.25);
+    background: rgba(0, 0, 0, 0.2);
     border-radius: 6px;
-    padding: 0.1rem 0.5rem;
-    font-size: 0.8rem;
-    min-width: 1.4rem;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.76rem;
+    min-width: 1.3rem;
     text-align: center;
     flex-shrink: 0;
   }
 
   /* --- Tab buttons: fix overflow --- */
-  .movehistory {
-    font-family: serif;
-    flex: 1 1 0;
-    min-width: 0;
-    text-align: center;
-    color: #f5f5dc;
-    font-weight: 700;
-    text-transform: uppercase;
-    margin: 8px 0;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-    letter-spacing: 1px;
-    padding: 0.6rem 0.5rem;
-    border-radius: 8px;
-    background: linear-gradient(145deg, #704725, #4d2f18);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    font-size: clamp(0.75rem, 2vw, 1rem);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
-    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-  }
+.movesButtons {
+  display: flex;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0 0.5rem;
+}
 
-  .movehistory:hover {
-    background: linear-gradient(145deg, #8a5830, #5c381c);
-    transform: translateY(-1px);
-    box-shadow: 0 6px 14px rgba(0,0,0,0.3);
-  }
+.movehistory {
+  font-family: serif;
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  color: #f5f5dc;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin: 12px 0;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+  letter-spacing: 1px;
+  padding: 0.5rem 0.4rem;
+  border-radius: 5px;
+  background-color: #5e3c20;
+  border: none;
+  font-size: clamp(0.7rem, 2vw, 0.95rem);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
 
-  /* --- Explorer tab --- */
+/* --- Explorer tab --- */
   .explorer {
-    /* Increased right padding for scrollbar clearance */
-    padding: 0.8rem 1.6rem 1.2rem 1rem; 
+    padding: 0.6rem 0.8rem 1rem;
     box-sizing: border-box;
   }
 
   .explorer-status {
     text-align: center;
-    color: rgba(245, 245, 220, 0.8);
+    color: rgba(245, 245, 220, 0.7);
     font-family: 'Inter', sans-serif;
-    font-size: 0.95rem;
-    padding: 2.5rem 1rem;
-    font-weight: 500;
+    font-size: 0.9rem;
+    padding: 2rem 1rem;
   }
 
   .explorer-status.error { color: #ffb0a8; }
@@ -2175,84 +2200,78 @@
   .explorer-header {
     display: flex;
     align-items: baseline;
-    gap: 0.6rem;
-    padding: 0.5rem 0.6rem 0.9rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-    margin-bottom: 0.8rem;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem 0.8rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: 0.6rem;
   }
 
   .explorer-eco {
     font-family: "JetBrains Mono", monospace;
     font-weight: 700;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     color: #9fd8ff;
-    background: rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    padding: 0.15rem 0.5rem;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    padding: 0.1rem 0.4rem;
     flex-shrink: 0;
-    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
   }
 
   .explorer-name {
     font-family: serif;
     font-weight: 700;
     color: #f5f5dc;
-    font-size: clamp(1rem, 2.2vw, 1.2rem);
+    font-size: clamp(0.95rem, 2.2vw, 1.15rem);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    text-shadow: 0 1px 3px rgba(0,0,0,0.4);
   }
 
   .explorer-table {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.3rem;
   }
 
   .explorer-row {
     display: grid;
-    grid-template-columns: 3.2rem 4.5rem 1fr;
+    grid-template-columns: 3rem 4.2rem 1fr;
     align-items: center;
-    gap: 0.7rem;
-    padding: 0.5rem 0.6rem;
-    border-radius: 10px;
-    background: rgba(0, 0, 0, 0.15);
+    gap: 0.6rem;
+    padding: 0.45rem 0.5rem;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.12);
     cursor: pointer;
-    transition: all 0.2s ease;
-    border: 1px solid transparent;
+    transition: background 0.15s ease;
   }
 
   .explorer-row:not(.explorer-row-head):not(.explorer-row-total):hover {
-    background: rgba(103, 122, 228, 0.25);
-    border: 1px solid rgba(103, 122, 228, 0.4);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    background: rgba(103, 122, 228, 0.18);
   }
 
   .explorer-row-head {
     background: transparent;
     cursor: default;
-    color: rgba(245, 245, 220, 0.6);
-    font-size: 0.7rem;
+    color: rgba(245, 245, 220, 0.55);
+    font-size: 0.68rem;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
+    letter-spacing: 0.6px;
     font-weight: 700;
-    padding-bottom: 0.3rem;
+    padding-bottom: 0.2rem;
   }
 
   .explorer-row-total {
     cursor: default;
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    margin-top: 0.3rem;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: 0.2rem;
     font-weight: 700;
   }
 
   .col-move {
     font-weight: 700;
     color: #f4f0e3;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2261,20 +2280,20 @@
   .col-games {
     display: flex;
     flex-direction: column;
-    line-height: 1.2;
+    line-height: 1.15;
   }
 
   .games-percent {
     font-family: "JetBrains Mono", monospace;
     font-weight: 700;
-    font-size: 0.88rem;
+    font-size: 0.85rem;
     color: #f4f0e3;
   }
 
   .games-count {
     font-family: "JetBrains Mono", monospace;
-    font-size: 0.7rem;
-    color: rgba(245, 245, 220, 0.6);
+    font-size: 0.68rem;
+    color: rgba(245, 245, 220, 0.55);
   }
 
   .col-split { min-width: 0; }
@@ -2282,15 +2301,15 @@
   .split-bar {
     display: flex;
     width: 100%;
-    height: 1.4rem;
-    border-radius: 8px;
+    height: 1.3rem;
+    border-radius: 6px;
     overflow: hidden;
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
   }
 
   .split-white, .split-draw, .split-black {
     height: 100%;
-    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.3s ease;
   }
 
   .split-white { background: #e8e4d8; }
