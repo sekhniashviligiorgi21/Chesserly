@@ -240,7 +240,7 @@
   let nodeIdCounter = 1
 
   const nodeMap = { 0: moveTree }
-  const currentNode = shallowshallowRef(moveTree)
+  const currentNode = shallowRef(moveTree)
 
   const renderedMoves = computed(() => {
     treeVersion.value
