@@ -56,8 +56,8 @@
     return stored >= 10 && stored <= 30 ? stored : 10
   }
 
-  const moveData = shallowshallowRef(null)
-  const boardAPI = shallowshallowRef(null)
+  const moveData = shallowRef(null)
+  const boardAPI = shallowRef(null)
   const isAnalyzing = shallowRef(false)
   const isImporting = shallowRef(false)
   const importProgress = shallowRef({ current: 0, total: 0 })
