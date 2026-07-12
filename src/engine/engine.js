@@ -67,7 +67,7 @@ export function cancelAnalysis() {
         sf11.postMessage('stop')
         setTimeout(() => {
             sf.removeEventListener('message', absorber)
-            sf11.removeEventListener('message', absorber)   // was missing
+            sf11.removeEventListener('message', absorber)
             resolve()
         }, 100)
     })
@@ -76,7 +76,7 @@ export function cancelAnalysis() {
 async function isBookMove(movesList, move) {
     const bookList = movesList.join(",")
 
-    const url = bookList 
+    const url = bookList
         ? `https://explorer.lichess.ovh/masters?play=${bookList}`
         : `https://explorer.lichess.ovh/masters`
 
@@ -89,7 +89,7 @@ async function isBookMove(movesList, move) {
             }
         })
         if (!response.ok) return false
-        
+
         const data = await response.json()
         return data.moves ? data.moves.some(m => m.uci === move) : false
     } catch (error) {
@@ -98,6 +98,11 @@ async function isBookMove(movesList, move) {
     }
 }
 
+// OPTIMIZED: runsf11 is now a plain boolean flag controlled entirely by the caller.
+// The "before" pass never runs SF11 anymore (see getEvaluation) — SF11 only fires
+// as a targeted follow-up once we know from the "after" result that a move is even
+// a brilliance candidate. This removes one full SF11 depth-8 search per move in the
+// common (non-brilliant) case.
 function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
     const myId = analysisId
 
@@ -201,27 +206,67 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false) {
     })
 }
 
+// NEW: isolated SF11 follow-up search, used only when we've already determined
+// (from the "after" position's own top moves) that this move is a brilliance
+// candidate. Runs independently of the SF18 worker so it doesn't block on / race
+// with a subsequent analyzePosition call for the next move.
+function runSf11BestMove(moves) {
+    const myId = analysisId
+
+    return new Promise((resolve) => {
+        let best11 = null
+
+        const onMessage11 = (i) => {
+            if (analysisId !== myId) {
+                sf11.removeEventListener('message', onMessage11)
+                resolve(null)
+                return
+            }
+            const msg11 = i.data
+            if (typeof msg11 === 'string' && msg11.startsWith('bestmove')) {
+                const m = msg11.match(/bestmove\s+(\S+)/)
+                if (m) best11 = m[1]
+                sf11.removeEventListener('message', onMessage11)
+                resolve(best11)
+            }
+        }
+
+        sf11.addEventListener('message', onMessage11)
+        sf11.postMessage(moves.length > 0 ? `position startpos moves ${moves.join(" ")}` : "position startpos")
+        sf11.postMessage(`go depth 8`)
+
+        // safety net in case sf11 never emits bestmove for some reason
+        setTimeout(() => {
+            sf11.removeEventListener('message', onMessage11)
+            resolve(best11)
+        }, 1500)
+    })
+}
+
 export async function getEvaluation(move, movesList, depth, onUpdate = null) {
     const myId = analysisId
 
+    // OPTIMIZED: "before" pass no longer runs SF11 at all. It only needs SF18's
+    // top moves (for best_move / second_best_eval) and book-move status.
     const [isBook, before] = await Promise.all([
         isBookMove(movesList, move),
-        analyzePosition(movesList, 10, null, true)
+        analyzePosition(movesList, 10, null, false)
     ])
 
     if (analysisId !== myId || !before) return null
 
     const eval_before = before.evaluation
     const top_moves = before.topMoves || []
-    const best11 = before.best11 ?? null       // SF11's best move from "before" position
     const best_move = top_moves[0]?.Move ?? ""
     const second_best_eval = top_moves.length >= 2
         ? (top_moves[1]?.Centipawn ?? 0)
         : (top_moves[0]?.Centipawn ?? 0)
 
-
     const afterMoves = move ? [...movesList, move] : movesList
     const side_to_move = afterMoves.length % 2 === 1 ? "w" : "b"
+
+    // best11 is resolved lazily: null until we decide we actually need it.
+    let best11 = null
 
     function buildResult(eval_after, topMovesAfter, currentDepth) {
         const best_line = topMovesAfter[0]?.line ?? []
@@ -244,7 +289,7 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
         if (move) {
             if (isBook) {
                 accuracy = "book"
-            } else if (best_move === move && top_moves.length >= 2 && brilliant_loss > 150 && best11 !== null  && best11 !== best_move) {
+            } else if (best_move === move && top_moves.length >= 2 && brilliant_loss > 150 && best11 !== null && best11 !== best_move) {
                 // SF18 agrees it's the best move, the 2nd option is >150cp worse,
                 // and SF11 (weaker engine) didn't find it — that's brilliant
                 accuracy = "brilliant"
@@ -341,7 +386,7 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
             } else if (!hadMate && hasMate) {
                 accuracy = "great"
             }
-        }   
+        }
 
 
 
@@ -360,12 +405,42 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
         }
     }
 
+    // OPTIMIZED: "after" pass never runs SF11 either (runsf11=false always now).
+    // Book moves still get this full-depth search so eval/best-line display keeps
+    // working for them — only the extra SF11 pass is skipped for book moves.
     const afterFinal = await analyzePosition(
         afterMoves,
         depth,
-        onUpdate ? (data) => onUpdate(buildResult(data.evaluation, data.topMoves, data.currentDepth)) : null
+        onUpdate ? (data) => onUpdate(buildResult(data.evaluation, data.topMoves, data.currentDepth)) : null,
+        false
     )
     if (!afterFinal) return null
+
+    // Decide, from the *after*-position result, whether this move is even a
+    // brilliance candidate before ever touching SF11. Book moves never need SF11.
+    let brilliant_loss_final = 0
+    if (move && !isBook && eval_before?.type === "cp" && afterFinal.evaluation?.type === "cp") {
+        brilliant_loss_final = side_to_move === "w"
+            ? afterFinal.evaluation.value - second_best_eval
+            : second_best_eval - afterFinal.evaluation.value
+    }
+
+    const isMateBrilliantCandidate =
+        move && !isBook &&
+        afterFinal.evaluation?.type === "mate" &&
+        best_move === move &&
+        top_moves.length >= 2 &&
+        top_moves[1]?.score?.type !== "mate" &&
+        (side_to_move === "w" ? afterFinal.evaluation.value > 0 : afterFinal.evaluation.value < 0)
+
+    const needsSf11 =
+        move && !isBook && best_move === move && top_moves.length >= 2 &&
+        (brilliant_loss_final > 150 || isMateBrilliantCandidate)
+
+    if (needsSf11) {
+        best11 = await runSf11BestMove(movesList)
+        if (analysisId !== myId) return null
+    }
 
     return buildResult(afterFinal.evaluation, afterFinal.topMoves, depth)
 }
