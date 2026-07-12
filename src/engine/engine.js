@@ -180,11 +180,33 @@ export function cancelAnalysis() {
     })
 }
 
+// Once a game/line has left known opening theory, it can never come back
+// into book by playing further moves — theory doesn't un-happen. So once we
+// learn that the position AFTER a given prefix is out of book, every move
+// played from any longer prefix that starts with it is guaranteed out of book
+// too, and we skip the Lichess masters lookup entirely for the rest of that
+// line. Tracked as a Set of "known out-of-book" move-prefixes (joined UCI
+// strings), checked by prefix match rather than exact match so it still works
+// correctly through undo/redo and variation branches.
+const outOfBookPrefixes = new Set()
+
+function isPositionOutOfBook(movesList) {
+    const joined = movesList.join(",")
+    for (const prefix of outOfBookPrefixes) {
+        if (joined === prefix || joined.startsWith(prefix + ",")) return true
+    }
+    return false
+}
+
 async function isBookMove(movesList, move) {
     // While on cooldown, skip Lichess entirely and report "not book" — this
     // is the same shape as a normal miss, so getEvaluation's logic downstream
     // doesn't need to know the difference.
     if (isLichessOnCooldown()) return false
+
+    // Already known to be past the end of book theory for this line — no
+    // point asking Lichess again, the answer can only ever be "not book".
+    if (isPositionOutOfBook(movesList)) return false
 
     const key = `${movesList.join(",")}|${move}`
     if (bookMoveCache.has(key)) {
@@ -223,6 +245,15 @@ async function isBookMove(movesList, move) {
         bookMoveCache.set(key, result)
         bookMoveDirty = true
         schedulePersist()
+
+        // The move just played wasn't in the masters database's move list for
+        // this position — that means the position AFTER this move (the new,
+        // longer prefix) is now out of book. Remember it so every future move
+        // deeper in this same line skips the network call entirely.
+        if (!result) {
+            outOfBookPrefixes.add([...movesList, move].join(","))
+        }
+
         return result
     } catch (error) {
         console.warn("Lichess book API fetch failed:", error)
