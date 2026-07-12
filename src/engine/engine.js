@@ -100,6 +100,58 @@ async function isBookMove(movesList, move) {
     }
 }
 
+// NEW: Lichess maintains a cloud database of positions already analyzed to high
+// depth (this is how their site shows deep opening evals instantly — it's a
+// lookup, not a live search). We check it before ever spinning up a local
+// Stockfish search for a position. Returns the same {evaluation, topMoves,
+// currentDepth} shape that analyzePosition resolves with, or null on any miss
+// (no cloud data, rate-limited, network error, etc.) so callers can transparently
+// fall back to local analysis.
+async function getCloudEval(fen, multiPV) {
+    const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=${multiPV}`
+
+    try {
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${LICHESS_TOKEN}`,
+                'Accept': 'application/json'
+            }
+        })
+        // 404 means "not in the cloud db" — a normal, expected miss, not an error.
+        if (!response.ok) return null
+
+        const data = await response.json()
+        if (!data || !Array.isArray(data.pvs) || data.pvs.length === 0) return null
+
+        // Lichess's cloud eval is always given from White's perspective already
+        // (unlike our own UCI parsing, which needs the isBlackToMove flip) — the
+        // API docs specify eval/mate values are white-relative, matching how the
+        // rest of this file represents `evaluation.value`.
+        const topMoves = data.pvs.map((pv) => {
+            const line = (pv.moves || '').split(' ').filter(Boolean)
+            const score = typeof pv.mate === 'number'
+                ? { type: 'mate', value: pv.mate }
+                : { type: 'cp', value: pv.cp ?? 0 }
+            return {
+                Move: line[0] ?? '',
+                Centipawn: score.type === 'cp' ? score.value : null,
+                score,
+                line
+            }
+        })
+
+        return {
+            evaluation: topMoves[0]?.score ?? null,
+            topMoves,
+            currentDepth: data.depth ?? 0,
+            best11: null
+        }
+    } catch (error) {
+        console.warn("Lichess cloud eval fetch failed:", error)
+        return null
+    }
+}
+
 // OPTIMIZED: multiPV is now a parameter. The "before" search only ever needs
 // best_move + second_best_eval (MultiPV 2), while the "after" search needs the
 // 3 lines actually shown in the UI (MultiPV 3). Narrower MultiPV means Stockfish
@@ -216,13 +268,29 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false, multiPV
     })
 }
 
-export async function getEvaluation(move, movesList, depth, onUpdate = null) {
+// NEW: tries the Lichess cloud-eval cache first; only spins up a local search
+// (via analyzePosition) if the cloud has no data for this exact position. The
+// caller-supplied fen must match `moves` (we don't derive it ourselves here to
+// avoid pulling a chess.js dependency into this module) — see call sites below.
+async function analyzeWithCloudFallback(fen, moves, depth, onUpdate, runsf11, multiPV) {
+    const cloud = await getCloudEval(fen, multiPV)
+    if (cloud) return cloud
+    return analyzePosition(moves, depth, onUpdate, runsf11, multiPV)
+}
+
+export async function getEvaluation(move, movesList, depth, onUpdate = null, beforeFen = null, afterFen = null) {
     const myId = analysisId
+
+    // "before" position: try cloud eval first, fall back to local depth-10 search.
+    // Cloud hits never need runsf11 (best11 is only used for brilliancy detection,
+    // which we still compute normally against whatever eval numbers we got).
+    const beforePromise = beforeFen
+        ? analyzeWithCloudFallback(beforeFen, movesList, 10, null, true, 2)
+        : analyzePosition(movesList, 10, null, true, 2)
 
     const [isBook, before] = await Promise.all([
         isBookMove(movesList, move),
-        // before-search only needs MultiPV 2 (best_move + second_best_eval),
-        analyzePosition(movesList, 10, null, true, 2)
+        beforePromise
     ])
 
     if (analysisId !== myId || !before) return null
@@ -376,15 +444,29 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
         }
     }
 
-    // "after" search stays at MultiPV 3 — this is the one the UI actually displays
-    // 3 lines from, so it keeps its full width.
-    const afterFinal = await analyzePosition(
-        afterMoves,
-        depth,
-        onUpdate ? (data) => onUpdate(buildResult(data.evaluation, data.topMoves, data.currentDepth)) : null,
-        false,
-        3
-    )
+    // "after" position: same cloud-first approach. Cloud eval never triggers
+    // onUpdate mid-search (there's nothing incremental about a cache hit — it's
+    // instant), so we call onUpdate manually once with the cloud result if we
+    // got one, keeping the same "live update" contract callers already rely on.
+    let afterFinal
+    if (afterFen) {
+        const cloud = await getCloudEval(afterFen, 3)
+        if (analysisId !== myId) return null
+        if (cloud) {
+            afterFinal = cloud
+            if (onUpdate) onUpdate(buildResult(cloud.evaluation, cloud.topMoves, cloud.currentDepth))
+        }
+    }
+
+    if (!afterFinal) {
+        afterFinal = await analyzePosition(
+            afterMoves,
+            depth,
+            onUpdate ? (data) => onUpdate(buildResult(data.evaluation, data.topMoves, data.currentDepth)) : null,
+            false,
+            3
+        )
+    }
     if (!afterFinal) return null
 
     return buildResult(afterFinal.evaluation, afterFinal.topMoves, depth)

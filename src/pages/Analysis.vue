@@ -237,7 +237,14 @@
   const nodeMap = { 0: moveTree }
   const currentNode = shallowRef(moveTree)
 
-
+  // OPTIMIZED: row/cell keys are now derived purely from node identity (node.id),
+  // not from `rows.length` or other positional counters. Previously the key
+  // `row-${current.id}-${ply}-${depth}-${rows.length}` meant that inserting or
+  // deleting a move anywhere in the tree shifted `rows.length` for every row
+  // that came after it — even rows whose actual move data never changed. Vue
+  // couldn't reuse any of that DOM, so every edit repainted the entire moves
+  // list below the edit point. Keying on node.id alone means only genuinely
+  // new/removed/reordered nodes cause Vue to touch the DOM.
   const renderedMoves = computed(() => {
     treeVersion.value
     const rows = []
@@ -629,6 +636,14 @@
     bestArrowSquares.value = null
     if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
 
+    // beforeFen/afterFen let getEvaluation check Lichess's cloud-eval cache
+    // before falling back to a local Stockfish search. currentNode.value.fen is
+    // always the "after" position (the position resulting from the move that
+    // got us to this node); its parent's fen (or the root fen if we're at the
+    // very start) is the "before" position.
+    const beforeFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
+    const afterFen = currentNode.value.fen
+
     await getEvaluation(
       movesListUCI.value.length === 0 ? '' : movesListUCI.value.at(-1),
       movesListUCI.value.slice(0, -1),
@@ -655,7 +670,9 @@
         if (!isImporting.value) {
           treeVersion.value++
         }
-      }
+      },
+      beforeFen,
+      afterFen
     )
   }
 
