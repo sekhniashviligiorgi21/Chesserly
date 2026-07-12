@@ -222,9 +222,7 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null) {
 
     const [isBook, before] = await Promise.all([
         isBookMove(movesList, move),
-        // OPTIMIZED: before-search only needs MultiPV 2 (best_move + second_best_eval),
-        // not 3 — narrower search here is pure win, nothing downstream uses a 3rd line
-        // from the before-position.
+        // before-search only needs MultiPV 2 (best_move + second_best_eval),
         analyzePosition(movesList, 10, null, true, 2)
     ])
 

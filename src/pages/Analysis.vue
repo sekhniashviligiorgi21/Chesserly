@@ -237,6 +237,14 @@
   const nodeMap = { 0: moveTree }
   const currentNode = shallowRef(moveTree)
 
+  // OPTIMIZED: row/cell keys are now derived purely from node identity (node.id),
+  // not from `rows.length` or other positional counters. Previously the key
+  // `row-${current.id}-${ply}-${depth}-${rows.length}` meant that inserting or
+  // deleting a move anywhere in the tree shifted `rows.length` for every row
+  // that came after it — even rows whose actual move data never changed. Vue
+  // couldn't reuse any of that DOM, so every edit repainted the entire moves
+  // list below the edit point. Keying on node.id alone means only genuinely
+  // new/removed/reordered nodes cause Vue to touch the DOM.
   const renderedMoves = computed(() => {
     treeVersion.value
     const rows = []
@@ -244,7 +252,7 @@
     function makeCell(node, moveNum, showAsStart, depth) {
       const isWhite = moveNum % 2 === 1
       return {
-        key: `cell-${node.id}-${moveNum}-${depth}`,
+        key: `cell-${node.id}`,
         node,
         displayNum: Math.ceil(moveNum / 2),
         isWhite,
@@ -271,7 +279,9 @@
         const mainReply = current.children[0] ?? null
 
         rows.push({
-          key: `row-${current.id}-${ply}-${depth}-${rows.length}`,
+          // Row key is now anchored to the current node's id (stable across
+          // insertions/deletions elsewhere in the tree) instead of rows.length.
+          key: `row-${current.id}`,
           depth,
           cells: [
             makeCell(current, ply, firstRow && isStartOfLine, depth),
@@ -739,10 +749,21 @@
     }
   }
 
+  // OPTIMIZED: previously replayed the ENTIRE game from move 1 through chess.js
+  // every single time this ran (moveData.value.moves_list.slice(0, -1).forEach
+  // bestChess.move(...)), which on move 40 meant 39 replayed moves just to
+  // convert one UCI string to SAN — on every analysis update, including cache
+  // hits during plain navigation. It now loads the *current* position's FEN
+  // directly (same pattern already used by uciLine/uciSecondLine/uciThirdLine)
+  // and plays only the single best_move on top of that — O(1) instead of O(game length).
   function sanBest() {
-    if (!moveData.value?.best_move) return 
-    bestChess.reset()
-    for (const move of moveData.value.moves_list.slice(0, -1)) bestChess.move(move)
+    if (!moveData.value?.best_move) return
+    // moves_list is the move list *after* the played move, so the position
+    // the best_move should be evaluated from is the one before that last move —
+    // i.e. currentNode's parent's fen (the "before" position), matching what
+    // moves_list.slice(0, -1) used to reconstruct the slow way.
+    const baseFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
+    bestChess.load(baseFen)
     const bestMoveBefore = moveData.value.best_move
     const bestMove = bestChess.move(bestMoveBefore, { sloppy: true })
     if (!bestMove) return
