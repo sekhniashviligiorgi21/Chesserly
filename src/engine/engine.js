@@ -314,7 +314,7 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, bef
     // which we still compute normally against whatever eval numbers we got).
     const beforePromise = beforeFen
         ? analyzeWithCloudFallback(beforeFen, movesList, 10, null, true, 2)
-        : analyzePosition(movesList, 5, null, true, 2)
+        : analyzePosition(movesList, 10, null, true, 2)
 
     const [isBook, before] = await Promise.all([
         isBookMove(movesList, move),
