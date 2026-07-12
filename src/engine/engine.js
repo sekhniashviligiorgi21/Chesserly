@@ -291,7 +291,7 @@ function analyzePosition(moves, depth, onUpdate = null, runsf11 = false, multiPV
         sf.postMessage(`go depth ${depth}`)
         if (runsf11) {
             sf11.postMessage(moves.length > 0 ? `position startpos moves ${moves.join(" ")}` : "position startpos")
-            sf11.postMessage(`go depth 9`)
+            sf11.postMessage(`go depth 8`)
         }
     })
 }
