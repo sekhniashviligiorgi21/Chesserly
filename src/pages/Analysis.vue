@@ -949,6 +949,7 @@
         if (!result) break
         await getAccuracy()
         importProgress.value.current++
+        boardAPI.value.setPosition(chess.fen)
       }
       if (!importCancelled) {
         goToStart()
