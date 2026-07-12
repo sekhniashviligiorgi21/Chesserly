@@ -9,7 +9,7 @@ let currentMultiPV = 3  // tracks what SF18 is currently configured for, so we o
 
 export async function startEngine() {
     return new Promise((resolve) => {
-        sf = new Worker('/stockfish/stockfish-17-lite-single.js')
+        sf = new Worker('/stockfish/stockfish-17.1-lite-single.js')
         sf11 = new Worker('/stockfish/stockfish.js')
 
         // Initialize SF18
