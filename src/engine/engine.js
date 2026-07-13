@@ -4,7 +4,7 @@ let sf = null
 let sf11 = null
 let analysisId = 0
 let currentResolve = null
-let currentMultiPV = 3 // tracks what SF17 is currently configured for
+let currentMultiPV = 3 // tracks what SF18 is currently configured for
 
 // ---- Storage Keys -----------------------------------------------------
 const CLOUD_EVAL_STORAGE_KEY = 'chesserly_cloudEvalCache'

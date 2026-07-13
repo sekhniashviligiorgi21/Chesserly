@@ -1121,11 +1121,11 @@
         </div>
         
         <div class="boardtools">
-          <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start"><--</button>
-          <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null"><</button>
+          <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start"><<-</button>
+          <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null"><-</button>
           <button class="reverse" @click="flipBoard" title="flip board">↳↰</button>
-          <button class="redo" title="next" @click="redoAccuracy" :disabled="isImporting || currentNode.children.length === 0">></button>
-          <button class="jumpend" @click="goToEnd" :disabled="isImporting || currentNode.children.length === 0" title="Jump to end">--></button>
+          <button class="redo" title="next" @click="redoAccuracy" :disabled="isImporting || currentNode.children.length === 0">-></button>
+          <button class="jumpend" @click="goToEnd" :disabled="isImporting || currentNode.children.length === 0" title="Jump to end">->></button>
         </div>
       </div>
     </div>
