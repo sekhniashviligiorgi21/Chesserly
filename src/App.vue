@@ -31,51 +31,38 @@
   }
 
   [data-theme="midnight"] {
-        --bg-1: #000000; --bg-2: #111111; --bg-3: #222222;
-        --panel-1: #1a1a1a; --panel-2: #0a0a0a;
-        --list-1: #2a2a2a; --list-2: #1a1a1a;
-        --btn-active: 
-    #444444; --btn-idle: 
-    #5c5c5c;
-        --title-btn-active-1: 
-    #333333; --title-btn-active-2: 
-    #111111;
-        --title-btn-idle-1: 
-    #4d4d4d; --title-btn-idle-2: 
-    #333333;
-        --text-highlight: 
-    #cfcfcf;
-        --board-light: 
-    #b8b8b8; --board-dark: 
-    #4a4a4a;
-      }
+    --bg-1: #000000; --bg-2: #111111; --bg-3: #222222;
+    --panel-1: #1a1a1a; --panel-2: #0a0a0a;
+    --list-1: #2a2a2a; --list-2: #1a1a1a;
+    --btn-active: #444444; 
+    --btn-idle: #5c5c5c;
+    --title-btn-active-1: #333333; 
+    --title-btn-active-2: #111111;
+    --title-btn-idle-1: #4d4d4d; 
+    --title-btn-idle-2: #333333;
+    --text-highlight: #cfcfcf;
+    --board-light: #b8b8b8; 
+    --board-dark: #4a4a4a;
+  }
 
   [data-theme="slate"] {
-        --bg-1: 
-    #2c3644; --bg-2: 
-    #3d4a5a; --bg-3: 
-    #4f5f70;
-        --panel-1: 
-    #3d4a5a; --panel-2: 
-    #2c3644;
-        --list-1: 
-    #4f5f70; --list-2: 
-    #3d4a5a;
-        --btn-active: 
-    #5b6d7e; --btn-idle: 
-    #728496;
-        --title-btn-active-1: 
-    #4f5f70; --title-btn-active-2: 
-    #3d4a5a;
-        --title-btn-idle-1: 
-    #728496; --title-btn-idle-2: 
-    #4f5f70;
-        --text-highlight: 
-    #cdd7e0;
-        --board-light: 
-    #dde3e8; --board-dark: 
-    #7c8ea0;
-      }
+    --bg-1: #2c3644; 
+    --bg-2: #3d4a5a; 
+    --bg-3: #4f5f70;
+    --panel-1: #3d4a5a; 
+    --panel-2: #2c3644;
+    --list-1: #4f5f70; 
+    --list-2: #3d4a5a;
+    --btn-active: #5b6d7e; 
+    --btn-idle: #728496;
+    --title-btn-active-1: #4f5f70; 
+    --title-btn-active-2: #3d4a5a;
+    --title-btn-idle-1: #728496; 
+    --title-btn-idle-2: #4f5f70;
+    --text-highlight: #cdd7e0;
+    --board-light: #dde3e8; 
+    --board-dark: #7c8ea0;
+  }
 
   [data-theme="wood"] {
     --bg-1: #241a12; --bg-2: #3a2818; --bg-3: #58402a;
