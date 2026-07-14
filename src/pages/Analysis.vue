@@ -36,19 +36,16 @@
 
     await startEngine();
     engineReady = true
-    if (!route.query.moves){
-      await getAccuracy()
-    } else {
-      await tryLoadImportedGame()
-    }
 
-    if(!route.query.fen){
+    if (route.query.fen) {
+      await loadFen(route.query.fen)
       await getAccuracy()
-      else{
-        await loadFen(route.query.fen)
-      }
+    } else if (route.query.moves) {
+      await tryLoadImportedGame()
+    } else {
+      await getAccuracy()
     }
-  });
+      });
 
   onBeforeUnmount(() => {
     window.removeEventListener('keydown', handleKeyDown)
@@ -926,7 +923,10 @@
   }
 
   async function loadFen(fen){
-    boardAPI.value.setPosition(fen)
+    chess.load(fen)
+    moveTree.fen = fen
+    currentNode.value = moveTree
+    if (boardAPI.value) boardAPI.value.setPosition(fen)
   }
 
   async function loadImportedGame(uciList) {
