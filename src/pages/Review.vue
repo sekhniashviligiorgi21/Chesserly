@@ -28,6 +28,12 @@
   const importSite = ref('chess.com')
   const importMode = ref('last') // 'last' | 'range'
 
+  // --- PGN / FEN import state ---
+  const pgnText = ref('')
+  const fenText = ref('')
+
+  const isPasteSource = computed(() => importSite.value === 'pgn' || importSite.value === 'fen')
+
   function normalizeLichessLine(line) {
     const lGame = JSON.parse(line)
 
@@ -102,6 +108,45 @@
     return [normalizeLichessLine(text.trim().split('\n')[0])]
   }
 
+  // Build a "game" object out of pasted PGN text, matching the shape
+  // selectGame()/analyseGame() expect from Chess.com/Lichess imports.
+  function buildGameFromPgn(pgn) {
+    const c = new Chess()
+    try {
+      c.loadPgn(pgn)
+    } catch (e) {
+      throw new Error('Could not parse that PGN.')
+    }
+    if (c.history().length === 0) throw new Error('No moves found in that PGN.')
+
+    const headers = c.getHeaders?.() || {}
+
+    return {
+      pgn,
+      time_class: 'unknown',
+      white: {
+        username: headers.White || 'White',
+        rating: Number(headers.WhiteElo) || 0,
+        result: 'unknown'
+      },
+      black: {
+        username: headers.Black || 'Black',
+        rating: Number(headers.BlackElo) || 0,
+        result: 'unknown'
+      }
+    }
+  }
+
+  function validateFen(fen) {
+    const c = new Chess()
+    try {
+      c.load(fen)
+    } catch (e) {
+      throw new Error('Could not parse that FEN.')
+    }
+    return fen
+  }
+
   async function chessImport() {
     loading.value = true
     error.value = null
@@ -109,6 +154,26 @@
     selectedGame.value = null
 
     try {
+      if (importSite.value === 'pgn') {
+        if (!pgnText.value.trim()) throw new Error('Paste a PGN first.')
+        const game = buildGameFromPgn(pgnText.value.trim())
+        games.value = [game]
+        selectGame(game)
+        loading.value = false
+        return
+      }
+
+      if (importSite.value === 'fen') {
+        if (!fenText.value.trim()) throw new Error('Paste a FEN first.')
+        const fen = validateFen(fenText.value.trim())
+        // FEN imports skip the game list / selectGame flow entirely and
+        // go straight to the analysis page with the position, since
+        // there's no move history to review.
+        router.push({ path: '/', query: { fen } })
+        loading.value = false
+        return
+      }
+
       if (!username.value) throw new Error('Enter a username first.')
 
       if (importMode.value === 'last') {
@@ -228,7 +293,7 @@
       <div class="import-card">
         <div class="card-header">
           <h1 class="import-title">Import a game</h1>
-          <p class="import-subtitle">Pull a game straight from Chess.com or Lichess for analysis.</p>
+          <p class="import-subtitle">Pull a game from Chess.com or Lichess, or paste your own PGN/FEN.</p>
         </div>
 
         <div class="site-toggle">
@@ -242,9 +307,19 @@
             :class="{ active: importSite === 'lichess' }"
             @click="importSite = 'lichess'"
           >Lichess</button>
+          <button
+            class="site-btn"
+            :class="{ active: importSite === 'pgn' }"
+            @click="importSite = 'pgn'"
+          >PGN</button>
+          <button
+            class="site-btn"
+            :class="{ active: importSite === 'fen' }"
+            @click="importSite = 'fen'"
+          >FEN</button>
         </div>
 
-        <div class="mode-toggle">
+        <div class="mode-toggle" v-if="!isPasteSource">
           <button
             class="mode-btn"
             :class="{ active: importMode === 'last' }"
@@ -257,7 +332,7 @@
           >By month</button>
         </div>
 
-        <div class="controls">
+        <div class="controls" v-if="!isPasteSource">
           <label class="field">
             <span class="field-label">Username</span>
             <input v-model="username" placeholder="e.g. magnuscarlsen" class="input" @keyup.enter="chessImport" />
@@ -286,6 +361,38 @@
           </button>
         </div>
 
+        <div class="paste-controls" v-if="importSite === 'pgn'">
+          <label class="field">
+            <span class="field-label">PGN</span>
+            <textarea
+              v-model="pgnText"
+              class="input textarea"
+              rows="6"
+              placeholder="[Event &quot;Casual Game&quot;]&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 ..."
+            ></textarea>
+          </label>
+          <button class="import-btn" @click="chessImport" :disabled="loading">
+            <span v-if="loading" class="spinner"></span>
+            {{ loading ? 'Parsing…' : 'Load PGN' }}
+          </button>
+        </div>
+
+        <div class="paste-controls" v-if="importSite === 'fen'">
+          <label class="field">
+            <span class="field-label">FEN</span>
+            <textarea
+              v-model="fenText"
+              class="input textarea textarea-fen"
+              rows="2"
+              placeholder="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            ></textarea>
+          </label>
+          <button class="import-btn" @click="chessImport" :disabled="loading">
+            <span v-if="loading" class="spinner"></span>
+            {{ loading ? 'Loading…' : 'Load FEN' }}
+          </button>
+        </div>
+
         <div v-if="error" class="error">{{ error }}</div>
 
         <div v-if="games.length > 1" class="games-list">
@@ -304,7 +411,7 @@
           </div>
         </div>
         
-        <div v-if="selectedGame" class="selection-bar">
+        <div v-if="selectedGame && importSite !== 'fen'" class="selection-bar">
           <div class="selection-info">
             <span class="selected-msg">Game ready</span>
             <span class="selection-players">
@@ -313,7 +420,7 @@
           </div>
           <button class="analyse-btn" @click="analyseGame()">Analyse →</button>
         </div>
-        <div v-else-if="games.length && !loading" class="empty">
+        <div v-else-if="games.length && !loading && importSite !== 'fen'" class="empty">
           No game selected yet.
         </div>
       </div>
@@ -417,6 +524,23 @@
     gap: 0.6rem;
     flex-wrap: wrap;
     align-items: flex-end;
+  }
+
+  .paste-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .textarea {
+    resize: vertical;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  .textarea-fen {
+    resize: none;
   }
 
   .field {
