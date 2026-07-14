@@ -1,8 +1,26 @@
 <script setup>
-  import { ref, computed, watch } from 'vue'
+  import { ref, computed, watch, onMounted } from 'vue'
   import Title from '../assets/Title.vue'
   import { Chess } from 'chess.js'
   import { useRouter } from 'vue-router'
+  import { auth, db } from '../firebase'
+  import { 
+    onAuthStateChanged, 
+    signInWithEmailAndPassword, 
+    createUserWithEmailAndPassword, 
+    signOut 
+  } from 'firebase/auth'
+  import { 
+    collection, 
+    addDoc, 
+    query, 
+    where, 
+    getDocs, 
+    serverTimestamp,
+    deleteDoc,
+    doc,
+    orderBy
+  } from 'firebase/firestore'
 
   const router = useRouter()
 
@@ -28,11 +46,99 @@
   const importSite = ref('chess.com')
   const importMode = ref('last') // 'last' | 'range'
 
+  // --- Auth State ---
+  const currentUser = ref(null)
+  const authEmail = ref('')
+  const authPassword = ref('')
+  const isRegistering = ref(false)
+  const authError = ref(null)
+
+  // --- Saved Games State ---
+  const savedGames = ref([])
+
+  onMounted(() => {
+    onAuthStateChanged(auth, (user) => {
+      currentUser.value = user
+      if (user) {
+        fetchSavedGames()
+      } else {
+        savedGames.value = []
+      }
+    })
+  })
+
+  async function handleAuth() {
+    authError.value = null
+    try {
+      if (isRegistering.value) {
+        await createUserWithEmailAndPassword(auth.value || auth, authEmail.value, authPassword.value)
+      } else {
+        await signInWithEmailAndPassword(auth.value || auth, authEmail.value, authPassword.value)
+      }
+      authEmail.value = ''
+      authPassword.value = ''
+    } catch (e) {
+      authError.value = e.message
+    }
+  }
+
+  async function handleLogout() {
+    await signOut(auth)
+  }
+
+  async function saveCurrentGame() {
+    if (!currentUser.value || !selectedGame.value) return
+    loading.value = true
+    try {
+      const gameData = {
+        userId: currentUser.value.uid,
+        pgn: selectedGame.value.pgn,
+        white: selectedGame.value.white,
+        black: selectedGame.value.black,
+        time_class: selectedGame.value.time_class,
+        createdAt: serverTimestamp()
+      }
+      await addDoc(collection(db, 'games'), gameData)
+      alert('Game saved to your library!')
+      fetchSavedGames()
+    } catch (e) {
+      console.error(e)
+      alert('Failed to save game.')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchSavedGames() {
+    if (!currentUser.value) return
+    const q = query(
+      collection(db, 'games'), 
+      where('userId', '==', currentUser.value.uid),
+      orderBy('createdAt', 'desc')
+    )
+    const querySnapshot = await getDocs(q)
+    savedGames.value = querySnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }))
+  }
+
+  async function deleteSavedGame(gameId, event) {
+    event.stopPropagation()
+    if (!confirm('Delete this game?')) return
+    try {
+      await deleteDoc(doc(db, 'games', gameId))
+      savedGames.value = savedGames.value.filter(g => g.id !== gameId)
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
   // --- PGN / FEN import state ---
   const pgnText = ref('')
   const fenText = ref('')
 
-  const isPasteSource = computed(() => importSite.value === 'pgn' || importSite.value === 'fen')
+  const isPasteSource = computed(() => importSite.value === 'pgn' || importSite.value === 'fen' || importSite.value === 'library')
 
   function normalizeLichessLine(line) {
     const lGame = JSON.parse(line)
@@ -317,6 +423,56 @@
             :class="{ active: importSite === 'fen' }"
             @click="importSite = 'fen'"
           >FEN</button>
+          <button
+            class="site-btn"
+            :class="{ active: importSite === 'library' }"
+            @click="importSite = 'library'"
+          >My Library</button>
+        </div>
+
+        <!-- Auth Section -->
+        <div v-if="importSite === 'library' && !currentUser" class="auth-container">
+          <h2 class="auth-title">{{ isRegistering ? 'Create Account' : 'Sign In' }}</h2>
+          <p class="auth-desc">Sign in to save and access your games from any device.</p>
+          <div class="auth-form">
+            <input v-model="authEmail" type="email" placeholder="Email" class="input" />
+            <input v-model="authPassword" type="password" placeholder="Password" class="input" />
+            <button class="import-btn" @click="handleAuth">
+              {{ isRegistering ? 'Register' : 'Login' }}
+            </button>
+            <p v-if="authError" class="error">{{ authError }}</p>
+            <button class="text-btn" @click="isRegistering = !isRegistering">
+              {{ isRegistering ? 'Already have an account? Login' : 'Need an account? Register' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="importSite === 'library' && currentUser" class="library-container">
+          <div class="library-header">
+            <span>Logged in as {{ currentUser.email }}</span>
+            <button class="logout-btn" @click="handleLogout">Logout</button>
+          </div>
+
+          <div v-if="savedGames.length === 0" class="empty-library">
+            Your library is empty. Import a game and click "Save to Library".
+          </div>
+          
+          <div v-else class="games-list">
+            <div 
+              v-for="game in savedGames" 
+              :key="game.id" 
+              class="game-row" 
+              :class="{ selected: selectedGame && selectedGame.id === game.id }" 
+              @click="selectGame(game)"
+            >
+              <span class="color-dot" :class="formatResult(game).myColor.toLowerCase()"></span>
+              <span class="opponent">vs {{ formatResult(game).opponent }}</span>
+              <span class="rating">{{ formatResult(game).myRating }} vs {{ formatResult(game).oppRating }}</span>
+              <span class="result" :class="formatResult(game).result === '1-0' ? 'win' : (formatResult(game).result === '0-1' ? 'loss' : 'draw')">{{ formatResult(game).result }}</span>
+              <span class="time-class">{{ game.time_class }}</span>
+              <button class="delete-btn" @click="deleteSavedGame(game.id, $event)">×</button>
+            </div>
+          </div>
         </div>
 
         <div class="mode-toggle" v-if="!isPasteSource">
@@ -419,6 +575,9 @@
             </span>
           </div>
           <button class="analyse-btn" @click="analyseGame()">Analyse →</button>
+          <button v-if="currentUser && importSite !== 'library'" class="save-btn" @click="saveCurrentGame" title="Save to Library">
+            💾
+          </button>
         </div>
         <div v-else-if="games.length && !loading && importSite !== 'fen'" class="empty">
           No game selected yet.
@@ -745,6 +904,113 @@
   }
 
   .analyse-btn:hover { background: var(--btn-idle); }
+
+  /* Auth & Library Styles */
+  .auth-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 12px;
+    text-align: center;
+  }
+
+  .auth-title {
+    font-family: serif;
+    font-size: 1.25rem;
+    color: var(--text-highlight);
+  }
+
+  .auth-desc {
+    font-size: 0.85rem;
+    color: rgba(244, 240, 227, 0.7);
+    margin-bottom: 0.5rem;
+  }
+
+  .auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .text-btn {
+    background: none;
+    border: none;
+    color: var(--text-highlight);
+    font-size: 0.8rem;
+    cursor: pointer;
+    text-decoration: underline;
+    opacity: 0.8;
+  }
+
+  .text-btn:hover { opacity: 1; }
+
+  .library-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .library-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: rgba(244, 240, 227, 0.8);
+    padding: 0.5rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+  }
+
+  .logout-btn {
+    background: rgba(255, 100, 100, 0.15);
+    border: 1px solid rgba(255, 100, 100, 0.3);
+    color: #ffb0a8;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .logout-btn:hover { background: rgba(255, 100, 100, 0.25); }
+
+  .empty-library {
+    text-align: center;
+    padding: 2rem;
+    color: rgba(244, 240, 227, 0.5);
+    font-style: italic;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+  }
+
+  .delete-btn {
+    background: none;
+    border: none;
+    color: rgba(255, 100, 100, 0.5);
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0 0.5rem;
+    margin-left: auto;
+    transition: color 0.2s;
+  }
+
+  .delete-btn:hover { color: #ffb0a8; }
+
+  .save-btn {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    padding: 0.5rem;
+    font-size: 1.1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .save-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: scale(1.05);
+  }
 
   .empty {
     color: rgba(244, 240, 227, 0.6);
