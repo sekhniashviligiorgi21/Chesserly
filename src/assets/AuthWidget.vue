@@ -67,9 +67,15 @@
       </div>
     </template>
 
-    <div v-else class="user-info">
-      <span class="user-email">{{ currentUser.email }}</span>
-      <button class="logout-btn" @click="handleLogout">Logout</button>
+    <!-- Clean User Avatar Menu (Replaces the annoying email box) -->
+    <div v-else class="user-menu-container">
+      <div class="user-avatar">
+        {{ currentUser.email ? currentUser.email[0].toUpperCase() : 'U' }}
+      </div>
+      <div class="user-dropdown">
+        <p class="dropdown-email">{{ currentUser.email }}</p>
+        <button class="logout-btn" @click="handleLogout">Logout</button>
+      </div>
     </div>
   </div>
 </template>
@@ -179,25 +185,78 @@
     word-break: break-word;
   }
 
-  .user-info {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(6px);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+  /* Clean Avatar Dropdown */
+  .user-menu-container {
+    position: relative;
+    width: 42px;
+    height: 42px;
   }
 
-  .user-email {
+  .user-avatar {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(145deg, var(--title-btn-active-1), var(--title-btn-active-2));
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.1rem;
+    cursor: pointer;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+    transition: transform 0.2s ease;
+  }
+
+  .user-menu-container:hover .user-avatar {
+    transform: scale(1.05);
+  }
+
+  .user-dropdown {
+    position: absolute;
+    top: 110%;
+    right: 0;
+    background: rgba(20, 15, 10, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 1rem;
+    min-width: 220px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    
+    /* Hidden by default */
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-10px);
+    transition: all 0.2s ease;
+  }
+
+  .user-menu-container:hover .user-dropdown {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+  }
+
+  .dropdown-email {
     color: #faedcd;
     font-size: 0.85rem;
     font-weight: 600;
+    text-align: center;
+    word-break: break-all;
+    margin: 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .logout-btn {
-    padding: 0.35rem 0.75rem;
+    padding: 0.4rem 1rem;
     border-radius: 6px;
     border: 1px solid rgba(255, 100, 100, 0.3);
     background: rgba(255, 100, 100, 0.15);
@@ -206,6 +265,7 @@
     font-weight: 600;
     cursor: pointer;
     transition: background 0.2s;
+    width: 100%;
   }
   .logout-btn:hover { background: rgba(255, 100, 100, 0.3); }
 </style>
