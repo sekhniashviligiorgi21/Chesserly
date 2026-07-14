@@ -669,7 +669,8 @@
         }
       },
       beforeFen,
-      afterFen
+      afterFen,
+      moveTree.fen
     )
   }
 
