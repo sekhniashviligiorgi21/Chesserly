@@ -41,6 +41,13 @@
     } else {
       await tryLoadImportedGame()
     }
+
+    if(!route.query.fen){
+      await getAccuracy()
+      else{
+        await loadFen(route.query.fen)
+      }
+    }
   });
 
   onBeforeUnmount(() => {
@@ -916,6 +923,10 @@
       boardAPI.value.setPosition(chess.fen())
       treeVersion.value++
       getAccuracy()
+  }
+
+  async function loadFen(fen){
+    boardAPI.value.setPosition(fen)
   }
 
   async function loadImportedGame(uciList) {
