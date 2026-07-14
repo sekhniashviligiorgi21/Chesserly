@@ -1,5 +1,5 @@
 <script setup>
-  import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+  import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
   import { Chess } from 'chess.js'
   import { TheChessboard } from 'vue3-chessboard'
   import 'vue3-chessboard/style.css'
@@ -7,11 +7,7 @@
   import SettingsPanel from "../assets/SettingsPanel.vue"
   import { startEngine, getEvaluation, cancelAnalysis, setOnLichessRateLimited } from "../engine/engine.js"
   import { useRoute, useRouter } from 'vue-router'
-  
-  // Auth Integration imports
-  import { auth, db } from '../firebase'
-  import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth'
-  import { collection, addDoc, query, where, getDocs, serverTimestamp } from 'firebase/firestore'
+
 
   const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
 
@@ -23,28 +19,16 @@
   const activeColor = ref('var(--btn-active)')
   const passiveColor = ref('var(--btn-idle)')
 
+  // Flag gates for preventing startup racing
   let boardReady = false
   let engineReady = false 
-
-  // Auth State
-  const currentUser = ref(null)
-  const authEmail = ref('')
-  const authPassword = ref('')
-  const isRegistering = ref(false)
-  const authError = ref(null)
-  const showGlobalAuthModal = ref(false)
 
   onMounted(async () => {
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('click', closeContextMenu)
     window.addEventListener('scroll', closeContextMenu, true)
-    
-    if(reportTitle.value) reportTitle.value.style.backgroundColor = passiveColor.value
-    if(explorerTitle.value) explorerTitle.value.style.backgroundColor = passiveColor.value
-
-    onAuthStateChanged(auth, (user) => {
-      currentUser.value = user
-    })
+    reportTitle.value.style.backgroundColor = passiveColor.value
+    explorerTitle.value.style.backgroundColor = passiveColor.value
 
     setOnLichessRateLimited(() => {
       showToast("Using fully local analysis for now")
@@ -61,7 +45,7 @@
     } else {
       await getAccuracy()
     }
-  });
+      });
 
   onBeforeUnmount(() => {
     window.removeEventListener('keydown', handleKeyDown)
@@ -137,53 +121,6 @@
   
   const explorerLoading = ref(false)
   const explorerError = ref("")
-
-  async function handleGlobalAuthAction() {
-    authError.value = null
-    try {
-      if (isRegistering.value) {
-        await createUserWithEmailAndPassword(auth.value || auth, authEmail.value, authPassword.value)
-      } else {
-        await signInWithEmailAndPassword(auth.value || auth, authEmail.value, authPassword.value)
-      }
-      authEmail.value = ''
-      authPassword.value = ''
-      showGlobalAuthModal.value = false
-      showToast("Authentication successful!")
-    } catch (e) {
-      authError.value = e.message
-    }
-  }
-
-  async function handleGlobalLogout() {
-    await signOut(auth)
-    showToast("Logged out smoothly")
-  }
-
-  async function autoSaveAnalysedGameToLibrary() {
-    if (!currentUser.value || movesListUCI.value.length === 0) return
-    try {
-      const finalPgn = chess.pgn()
-      const q = query(
-        collection(db, 'games'),
-        where('userId', '==', currentUser.value.uid),
-        where('pgn', '==', finalPgn)
-      )
-      const snap = await getDocs(q)
-      if (snap.empty) {
-        await addDoc(collection(db, 'games'), {
-          userId: currentUser.value.uid,
-          pgn: finalPgn,
-          white: { username: whiteName.value, rating: Number(whiteRating.value) || 0, result: 'unknown' },
-          black: { username: blackName.value, rating: Number(blackRating.value) || 0, result: 'unknown' },
-          time_class: 'analysed',
-          createdAt: serverTimestamp()
-        })
-      }
-    } catch (e) {
-      console.error("Analysis auto-save failure:", e)
-    }
-  }
 
   async function importLichessExplorer(){
     explorerLoading.value = true
@@ -269,6 +206,7 @@
     }
   }
 
+  // OPTIMIZED: Uses structural gating to prevent layout-bashing re-renders
   function playExplorerMove(uci) {
     const result = applyUciMove(uci)
     if (!result) return
@@ -301,10 +239,18 @@
   let longPressTriggered = false
   let toastTimeout = null
   let audioCtx = null
+  let accuracyDebounceTimer = null
   let lastPress = 0
 
   const moveTree = {
-    id: 0, san: null, uci: null, fen: chess.fen(), accuracy: null, analysisData: null, parent: null, children: []
+    id: 0,
+    san: null,
+    uci: null,
+    fen: chess.fen(),
+    accuracy: null,
+    analysisData: null, 
+    parent: null,
+    children: []
   }
 
   let nodeIdCounter = 1
@@ -434,7 +380,9 @@
     }
   }
 
-  function closeContextMenu() { contextMenu.value.visible = false }
+  function closeContextMenu() {
+    contextMenu.value.visible = false
+  }
 
   function openContextMenu(event, nodeId) {
     showContextMenu(event.clientX, event.clientY, nodeId)
@@ -455,7 +403,9 @@
     }, 500)
   }
 
-  function cancelLongPress() { clearTimeout(longPressTimer) }
+  function cancelLongPress() {
+    clearTimeout(longPressTimer)
+  }
 
   function handleCellClick(nodeId) {
     if (longPressTriggered) {
@@ -673,13 +623,14 @@
       isAnalyzing.value = false
       if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
       
-      evalSize()
-      moveDescription()
-      sanBest()
-      uciSecondLine()
-      uciThirdLine()
-      uciLine()
+      if (typeof evalSize === "function") evalSize()
+      if (typeof moveDescription === "function") moveDescription()
+      if (typeof sanBest === "function") sanBest()
+      if (typeof uciSecondLine === "function") uciSecondLine()
+      if (typeof uciThirdLine === "function") uciThirdLine()
+      if (typeof uciLine === "function") uciLine()
       drawBestArrow()
+      
       return 
     }
 
@@ -705,12 +656,12 @@
         currentDepth.value = result.depth
         isAnalyzing.value = false
         
-        evalSize()
-        moveDescription()
-        sanBest()
-        uciSecondLine()
-        uciThirdLine()
-        uciLine()
+        if (typeof evalSize === "function") evalSize()
+        if (typeof moveDescription === "function") moveDescription()
+        if (typeof sanBest === "function") sanBest()
+        if (typeof uciSecondLine === "function") uciSecondLine()
+        if (typeof uciThirdLine === "function") uciThirdLine()
+        if (typeof uciLine === "function") uciLine()
         drawBestArrow()
         
         if (!isImporting.value) {
@@ -718,7 +669,7 @@
         }
       },
       beforeFen,
-      afterFen,
+      afterFen
       moveTree.fen
     )
   }
@@ -768,15 +719,15 @@
     isAccuracy.value = ''
     if (!currentNode.value.san) return
     const descriptions = {
-      great:      { color: '#4c8cb5', text: ' is a great move!'},
+      great:      { color: '#4c8cb5',  text: ' is a great move!'},
       brilliant:  { color: '#03aea7', text: ' is a brilliant move!!' },
-      book:       { color: '#ad8760', text: ' is a book move' },
-      best:       { color: '#6ad13f', text: ' is the best move' },
-      excellent:  { color: '#90bc36', text: ' is an excellent move' },
+      book:       { color: '#ad8760',   text: ' is a book move' },
+      best:       { color: '#6ad13f',   text: ' is the best move' },
+      excellent:  { color: '#90bc36',   text: ' is an excellent move' },
       good:       { color: '#8eae83', text: ' is a good move' },
-      inaccuracy: { color: '#f2bc43', text: ' is an inaccuracy' },
-      mistake:    { color: '#f38800', text: ' is a mistake' },
-      blunder:    { color: '#FF0000', text: ' is a blunder' },
+      inaccuracy: { color: '#f2bc43',   text: ' is an inaccuracy' },
+      mistake:    { color: '#f38800',   text: ' is a mistake' },
+      blunder:    { color: '#FF0000',   text: ' is a blunder' },
     }
     const config = descriptions[moveData.value.move_accuracy]
     if (!config) return
@@ -851,18 +802,21 @@
 
   function squareStyle(square) {
     if (!square) return {}
+
     const file = square.charCodeAt(0) - 97
     const rank = parseInt(square[1]) - 1
     const isFlipped = (rotate.value / 180) % 2 === 1
+
     const col = isFlipped ? 7 - file : file
     const row = isFlipped ? rank : 7 - rank
+
     return {
         position: 'absolute',
         left: `${(col + 1) * 12.5}%`,
         top: `${row * 12.5}%`,  
         transform: 'translate(-70%, -35%)',
     }
-  }
+}
 
   async function playMove() {
       if (!moveData.value?.best_move) return
@@ -992,8 +946,6 @@
       if (!importCancelled) {
         goToStart()
         treeVersion.value++
-        // Game has finished full engine evaluation -> automatically archive to cloud
-        await autoSaveAnalysedGameToLibrary()
       }
     } finally {
       isImporting.value = false
@@ -1076,6 +1028,7 @@
 </script>
 
 <template>
+  <!-- Main Settings Integration -->
   <SettingsPanel 
     v-model:isOpen="isSettingsOpen"
     v-model:targetDepth="targetDepth"
@@ -1098,21 +1051,14 @@
         <div class="loading-progress-bar">
           <div class="loading-progress-fill" :style="{ width: importProgressPercent + '%' }"></div>
         </div>
+        <div class="loading-tips">
+          <p class="loading-tip">Review stuck? A quick page refresh usually fixes it.</p>
+          <p class="loading-tip">Feels slow? Try lowering the engine depth in Settings.</p>
+        </div>
         <button class="cancel-import-btn" @click="cancelImport">Cancel review</button>
       </div>
     </div>
   </Transition>
-
-  <!-- Global Account Dashboard Actions Block -->
-  <div class="global-top-auth-action">
-    <div v-if="currentUser" class="auth-pill-status">
-      <span class="user-txt">👤 {{ currentUser.email }}</span>
-      <button class="pill-btn danger" @click="handleGlobalLogout">Sign Out</button>
-    </div>
-    <div v-else class="auth-pill-status">
-      <button class="pill-btn primary" @click="showGlobalAuthModal = true">Sign In / Register</button>
-    </div>
-  </div>
 
   <div class="grid-layout">
     <Title class="title-slot"/>
@@ -1221,6 +1167,7 @@
           <button class="movehistory" @click="changeActiveToExplorer()" ref="explorerTitle">Explorer</button>
         </div>
         
+        <!-- MOVES TAB -->
         <div class="moveslist" v-if="activeTab === 'moves'" ref="movesListRef">
           <template v-for="row in renderedMoves" :key="row.key">
             <div class="move-row" :class="{ variant: row.depth > 0 }" :style="{ '--indent': `${row.depth * 1.05}rem` }">
@@ -1245,6 +1192,7 @@
           </template>
         </div>
 
+        <!-- REPORT TAB -->
         <div class="report" v-else-if="activeTab === 'report'">
           <div class="report-columns">
             <div class="report-col">
@@ -1293,6 +1241,7 @@
           </div>
         </div>
 
+       <!-- EXPLORER TAB -->
       <div class="explorer" v-else-if="activeTab === 'explorer'">
         <div v-if="explorerLoading" class="explorer-status">Loading…</div>
         <div v-else-if="explorerError" class="explorer-status error">{{ explorerError }}</div>
@@ -1328,26 +1277,28 @@
                 </div>
               </span>
             </div>
+
+            <div class="explorer-row explorer-row-total" v-if="explorerStats">
+              <span class="col-move">Σ</span>
+              <span class="col-games">
+                <span class="games-percent">100%</span>
+                <span class="games-count">{{ explorerStats.total.toLocaleString() }}</span>
+              </span>
+              <span class="col-split">
+                <div class="split-bar">
+                  <div class="split-white" :style="{ width: explorerStats.white + '%' }" :title="`White ${explorerStats.white}%`"></div>
+                  <div class="split-draw" :style="{ width: explorerStats.draws + '%' }" :title="`Draws ${explorerStats.draws}%`"></div>
+                  <div class="split-black" :style="{ width: explorerStats.black + '%' }" :title="`Black ${explorerStats.black}%`"></div>
+                </div>
+              </span>
+            </div>
           </div>
+
           <div class="explorer-status" v-else>No games found for this position</div>
         </template>
       </div>
 
       </div>
-    </div>
-  </div>
-
-  <!-- Central Modal Box Pop-up Layer -->
-  <div v-if="showGlobalAuthModal" class="global-modal-backdrop" @click.self="showGlobalAuthModal = false">
-    <div class="auth-dialog">
-      <h3>{{ isRegistering ? 'Create Account' : 'Login Port' }}</h3>
-      <input v-model="authEmail" type="email" placeholder="Email Address" class="dialog-input" />
-      <input v-model="authPassword" type="password" placeholder="Password Code" class="dialog-input" />
-      <button class="pill-btn primary full-width" @click="handleGlobalAuthAction">Submit Entry</button>
-      <p v-if="authError" class="dialog-error">{{ authError }}</p>
-      <button class="swap-mode-btn" @click="isRegistering = !isRegistering">
-        {{ isRegistering ? 'Existing Profile? Log In' : 'New Here? Create Account' }}
-      </button>
     </div>
   </div>
 
@@ -1358,7 +1309,9 @@
       :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
       @click.stop
     >
-      <button class="context-menu-item delete" @click="handleDeleteFromMenu">Delete move</button>
+      <button class="context-menu-item delete" @click="handleDeleteFromMenu">
+        Delete move
+      </button>
     </div>
   </Teleport>
 
@@ -1368,91 +1321,40 @@
 </template>
 
 <style scoped>
-  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght=600;700&family=Inter:wght=400;500;600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-  /* Updated layout: review.vue covers the whole page with title next to it */
   .grid-layout {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    padding: 1.5rem;
+    padding: clamp(0.5rem, 3vw, 1rem);
     display: grid;
-    grid-template-columns: auto 1.3fr 1fr;
-    grid-template-areas: "title board analysis";
-    gap: 2rem;
-    width: 100vw;
-    min-height: 100vh;
-    max-width: none;
-    margin: 0;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "title"
+      "board"
+      "analysis";
+    gap: 1.5rem;
+    max-width: 1600px;
+    margin: 0 auto;
     box-sizing: border-box;
   }
 
-  .global-top-auth-action {
-    position: absolute;
-    top: 1rem;
-    right: 2rem;
-    z-index: 100;
+  @media (min-width: 768px) {
+    .grid-layout {
+      grid-template-columns: auto 1fr;
+      grid-template-areas:
+        "title board"
+        "title analysis";
+      gap: 1rem;
+    }
   }
 
-  .auth-pill-status {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    background: rgba(0, 0, 0, 0.45);
-    padding: 0.4rem 0.8rem;
-    border-radius: 30px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+  @media (min-width: 1200px) {
+    .grid-layout {
+      grid-template-columns: auto 2fr 1fr;
+      grid-template-areas: "title board analysis";
+      gap: 2rem;
+    }
   }
-
-  .user-txt { color: #f4f0e3; font-size: 0.82rem; font-weight: 500; }
-
-  .pill-btn {
-    border: none;
-    padding: 0.35rem 0.9rem;
-    font-size: 0.78rem;
-    font-weight: 700;
-    border-radius: 20px;
-    cursor: pointer;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .pill-btn.primary { background: var(--btn-active); color: #f4f0e3; }
-  .pill-btn.danger { background: rgba(230, 80, 80, 0.15); color: #ffb0a8; border: 1px solid rgba(230,80,80,0.3); }
-  .full-width { width: 100%; }
-
-  .global-modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.65);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 300;
-  }
-
-  .auth-dialog {
-    background: #1c1c22;
-    padding: 2.2rem;
-    border-radius: 14px;
-    width: 300px;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    border: 1px solid rgba(255,255,255,0.08);
-  }
-
-  .auth-dialog h3 { font-family: serif; font-size: 1.25rem; color: #f5f5dc; text-align: center; margin: 0; }
-
-  .dialog-input {
-    padding: 0.55rem 0.7rem;
-    border-radius: 6px;
-    border: 1px solid rgba(255,255,255,0.12);
-    background: rgba(0,0,0,0.3);
-    color: #fff;
-  }
-
-  .dialog-error { color: #ffb0a8; font-size: 0.8rem; background: rgba(255,0,0,0.1); padding: 0.4rem; border-radius: 4px; }
-
-  .swap-mode-btn { background: none; border: none; color: var(--text-highlight); font-size: 0.78rem; text-decoration: underline; cursor: pointer; }
 
   .title-slot { grid-area: title; min-width: 0; }
 
@@ -1497,6 +1399,9 @@
     border-radius: 8px;
   }
 
+  /* Overrides chessground's default board-image background with a themed
+     checkerboard tied to --board-light / --board-dark, so the board squares
+     recolor along with the rest of the UI when the theme changes. */
   :deep(cg-board) {
     background: conic-gradient(
       var(--board-dark) 90deg,
@@ -1542,71 +1447,140 @@
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.22);
     color: #f4f0e3;
+    font-family: 'Inter', sans-serif;
     font-size: clamp(0.82rem, 1.8vw, 0.95rem);
     width: 100%;
     box-sizing: border-box;
   }
 
-  .player-bar.bottom { margin-bottom: 0; margin-top: 0.2rem; }
+  .player-bar.bottom {
+    margin-bottom: 0;
+    margin-top: 0.2rem;
+  }
 
   .player-color-dot {
-    width: 0.6rem; height: 0.6rem; border-radius: 50%; flex-shrink: 0;
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    flex-shrink: 0;
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
   }
+
   .player-color-dot.white { background: #f4f0e3; }
   .player-color-dot.black { background: #1a1a1a; }
 
-  .player-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .player-rating {
-    font-family: "JetBrains Mono", monospace; font-size: 0.8em; color: rgba(244, 240, 227, 0.75);
-    margin-left: auto; background: rgba(0, 0, 0, 0.25); border-radius: 6px; padding: 0.05rem 0.4rem; flex-shrink: 0;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8em;
+    color: rgba(244, 240, 227, 0.75);
+    margin-left: auto;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    padding: 0.05rem 0.4rem;
+    flex-shrink: 0;
   }
 
   .moves {
-    margin-top: 10px; background: linear-gradient(145deg, var(--panel-1), var(--panel-2)); border-radius: 16px;
-    width: 100%; max-width: 500px; height: clamp(300px, 50vh, 500px);
+    margin-top: 10px;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    border-radius: 16px;
+    width: 100%;
+    max-width: 500px;
+    height: clamp(300px, 50vh, 500px);
     box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    overflow-y: auto; overflow-x: hidden; box-sizing: border-box; border: 1px solid rgba(255, 255, 255, 0.08);
-    margin: 0 auto; scrollbar-width: thin; scrollbar-color: rgba(194, 197, 170, 0.4) rgba(0, 0, 0, 0.2);
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin: 0 auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(194, 197, 170, 0.4) rgba(0, 0, 0, 0.2);
   }
 
   @media (min-width: 1200px) { .moves { max-width: 20rem; } }
 
   .moveslist {
-    margin: 0 auto; padding: 12px; width: 100%; box-sizing: border-box;
-    background: linear-gradient(135deg, var(--list-1), var(--list-2)); border-radius: 14px;
-    font-size: clamp(0.9rem, 2vw, 1rem); box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
-    display: flex; flex-direction: column; gap: 0.55rem; scroll-behavior: smooth;
+    margin: 0 auto;
+    padding: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    background: linear-gradient(135deg, var(--list-1), var(--list-2));
+    border-radius: 14px;
+    font-size: clamp(0.9rem, 2vw, 1rem);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    scroll-behavior: smooth;
   }
 
-  .movesButtons { display: flex; justify-content: center; gap: 0.5rem; }
+  .movesButtons {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+  }
 
   .move-row {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem;
-    align-items: start; margin-left: var(--indent, 0rem); padding-left: 0.35rem; position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    align-items: start;
+    margin-left: var(--indent, 0rem);
+    padding-left: 0.35rem;
+    position: relative;
   }
 
   .move-row.variant { border-left: 2px solid rgba(232, 232, 208, 0.16); }
 
   .move-cell {
-    min-height: 2.45rem; padding: 0.55rem 0.7rem; border-radius: 12px; cursor: pointer; color: #f4f0e3;
-    font-weight: 500; transition: all 0.15s ease; display: flex; align-items: center; flex-wrap: wrap;
-    gap: 0.35rem; background: rgba(0, 0, 0, 0.12); border: 1px solid rgba(255, 255, 255, 0.06);
-    box-sizing: border-box; overflow: hidden; user-select: none;
+    min-height: 2.45rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 12px;
+    cursor: pointer;
+    color: #f4f0e3;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    background: rgba(0, 0, 0, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-sizing: border-box;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
-  .move-cell:hover { background: rgba(103, 122, 228, 0.18); transform: translateY(-1px); }
+  .move-cell:hover {
+    background: rgba(103, 122, 228, 0.18);
+    transform: translateY(-1px);
+  }
 
   .move-cell.active {
     background: linear-gradient(135deg, rgba(103, 122, 228, 0.42), rgba(103, 122, 228, 0.22));
-    border-color: rgba(220, 228, 255, 0.7); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 18px rgba(103, 122, 228, 0.25);
+    border-color: rgba(220, 228, 255, 0.7);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 18px rgba(103, 122, 228, 0.25);
   }
 
   .move-cell.variant { color: #dbe4ff; background: rgba(255, 255, 255, 0.06); }
   .move-cell.empty { pointer-events: none; background: transparent; border-color: transparent; box-shadow: none; }
 
-  .move-num { color: rgba(232, 232, 208, 0.72); font-size: 0.78em; font-weight: 700; padding: 0.15rem 0.45rem; border-radius: 999px; background: rgba(0, 0, 0, 0.16); }
+  .move-num {
+    color: rgba(232, 232, 208, 0.72);
+    font-size: 0.78em;
+    font-weight: 700;
+    padding: 0.15rem 0.45rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.16);
+  }
 
   .move-san-text { font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .acc-badge { width: 20px; height: 20px; border-radius: 50%; margin-left: 2px; }
@@ -1614,112 +1588,707 @@
   .analysis-container { grid-area: analysis; display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 
   .analyze {
-    border-radius: 15px; width: 100%; max-width: 500px; min-height: 200px; padding-bottom: 1rem;
-    background: linear-gradient(145deg, var(--panel-1), var(--panel-2)); box-sizing: border-box;
-    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.08); margin: auto;
+    border-radius: 15px;
+    width: 100%;
+    max-width: 500px;
+    min-height: 200px;
+    padding-bottom: 1rem;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    box-sizing: border-box;
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin: auto;
   }
 
   @media (min-width: 1200px) { .analyze { max-width: 20rem; } }
 
-  .analyzis-header { display: flex; justify-content: flex-end; align-items: center; gap: 3rem; padding: 1rem 1rem 0.5rem; }
+  .analyzis-header {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 3rem;
+    padding: 1rem 1rem 0.5rem;
+  }
 
   .analyzis {
-    font-family: serif; color: #f5f5dc; font-weight: 700; text-transform: uppercase;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3); letter-spacing: 2px; font-size: clamp(1.1rem, 2.5vw, 1.4rem);
-    display: flex; align-items: center; gap: 0.5rem; margin: 0;
+    font-family: serif;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 2px;
+    font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
   }
 
   .settings-btn {
-    background: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 8px;
-    width: 36px; height: 36px; flex-shrink: 0; display: flex; justify-content: center; align-items: center;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #fff;
+    border-radius: 8px;
+    width: 36px; height: 36px;
+    flex-shrink: 0;
+    display: flex; justify-content: center; align-items: center;
     cursor: pointer; transition: all 0.2s ease;
   }
+
   .settings-btn:hover { background: rgba(0, 0, 0, 0.4); transform: scale(1.05); }
 
   .thinking-dot {
-    width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #6ad13f; box-shadow: 0 0 8px rgba(106, 209, 63, 0.9);
+    width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    background: #6ad13f; box-shadow: 0 0 8px rgba(106, 209, 63, 0.9);
     animation: thinkingPulse 1s ease-in-out infinite;
   }
 
   @keyframes thinkingPulse { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.15); } }
 
   .analysis-loading-overlay {
-    position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center;
-    background: rgba(15, 10, 6, 0.25); backdrop-filter: blur(4px) saturate(105%);
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 10, 6, 0.25);
+    backdrop-filter: blur(4px) saturate(105%);
+    -webkit-backdrop-filter: blur(4px) saturate(105%);
   }
 
   .loading-content {
-    display: flex; flex-direction: column; align-items: center; gap: 0.9rem; padding: 2rem 2.5rem;
-    background: linear-gradient(145deg, var(--panel-1), var(--panel-2)); border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 18px; box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5); max-width: min(90vw, 22rem);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 2rem 2.5rem;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5);
+    max-width: min(90vw, 22rem);
   }
 
-  .loading-spinner { position: relative; width: 64px; height: 64px; }
+  .loading-spinner {
+    position: relative;
+    width: 64px;
+    height: 64px;
+  }
 
   .spinner-ring {
-    position: absolute; inset: 0; border-radius: 50%; border: 3px solid transparent;
-    border-top-color: var(--text-highlight); animation: spinRing 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 3px solid transparent;
+    border-top-color: var(--text-highlight);
+    animation: spinRing 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
   }
-  .spinner-ring:nth-child(2) { inset: 8px; border-top-color: #a8d97a; animation-duration: 1.6s; animation-direction: reverse; }
-  .spinner-ring:nth-child(3) { inset: 16px; border-top-color: #f4f0e3; animation-duration: 2s; }
+
+  .spinner-ring:nth-child(2) {
+    inset: 8px;
+    border-top-color: #a8d97a;
+    animation-duration: 1.6s;
+    animation-direction: reverse;
+  }
+
+  .spinner-ring:nth-child(3) {
+    inset: 16px;
+    border-top-color: #f4f0e3;
+    animation-duration: 2s;
+  }
 
   @keyframes spinRing { to { transform: rotate(360deg); } }
 
   .loading-title {
-    font-family: serif; color: #f5f5dc; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 1.5px; font-size: 1.05rem; margin: 0; text-align: center; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-family: serif;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-size: 1.05rem;
+    margin: 0;
+    text-align: center;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
   }
-  .loading-subtitle { font-family: "JetBrains Mono", monospace; color: rgba(244, 240, 227, 0.8); font-size: 0.82rem; margin: 0; text-align: center; }
 
-  .loading-progress-bar { width: 180px; height: 5px; border-radius: 999px; background: rgba(0, 0, 0, 0.35); overflow: hidden; margin-top: 0.2rem; }
-  .loading-progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--text-highlight), #a8d97a); transition: width 0.3s ease; }
+  .loading-subtitle {
+    font-family: "JetBrains Mono", monospace;
+    color: rgba(244, 240, 227, 0.8);
+    font-size: 0.82rem;
+    margin: 0;
+    text-align: center;
+  }
+
+  .loading-progress-bar {
+    width: 180px;
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+    margin-top: 0.2rem;
+  }
+
+  .loading-progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--text-highlight), #a8d97a);
+    transition: width 0.3s ease;
+  }
+
+  .loading-tips {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    width: 100%;
+  }
+
+  .loading-tip {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.78rem;
+    color: rgba(244, 240, 227, 0.65);
+    text-align: center;
+    margin: 0;
+    line-height: 1.4;
+  }
 
   .cancel-import-btn {
-    margin-top: 0.5rem; padding: 0.55rem 1.3rem; border-radius: 8px; border: 1px solid rgba(255, 107, 107, 0.35);
-    background: rgba(255, 60, 60, 0.12); color: #ffb0a8; font-weight: 600; font-size: 0.85rem; cursor: pointer; transition: background 0.2s ease, border-color 0.2s ease;
+    margin-top: 0.5rem;
+    padding: 0.55rem 1.3rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 107, 107, 0.35);
+    background: rgba(255, 60, 60, 0.12);
+    color: #ffb0a8;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
   }
-  .cancel-import-btn:hover { background: rgba(255, 60, 60, 0.22); border-color: rgba(255, 107, 107, 0.55); }
+
+  .cancel-import-btn:hover {
+    background: rgba(255, 60, 60, 0.22);
+    border-color: rgba(255, 107, 107, 0.55);
+  }
+
+  .loading-fade-enter-active, .loading-fade-leave-active {
+    transition: opacity 0.35s ease;
+  }
+
+  .loading-fade-enter-from, .loading-fade-leave-to {
+    opacity: 0;
+  }
 
   .movehistory {
-    font-family: serif; position: sticky; text-align: center; color: #f5f5dc; font-weight: 700; text-transform: uppercase;
-    margin: 20px 0; text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3); letter-spacing: 2.5px; padding: 0.5rem 1.5rem;
-    border-radius: 5px; background-color: var(--btn-idle); border: none; font-size: clamp(1rem, 2vw, 1.2rem);
+    font-family: serif;
+    position: sticky;
+    text-align: center;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin: 20px 0;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 2.5px;
+    padding: 0.5rem 1.5rem;
+    border-radius: 5px;
+    background-color: var(--btn-idle);
+    border: none;
+    font-size: clamp(1rem, 2vw, 1.2rem);
   }
 
   .boardtools {
-    display: flex; gap: 0.75rem; justify-content: center; align-items: center; min-height: 3.2rem; width: 100%; box-sizing: border-box;
-    background: linear-gradient(145deg, var(--panel-1), var(--panel-2)); border: 2px solid rgba(182, 173, 144, 0.4);
-    padding: 0.5rem 1rem; border-radius: 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3); margin: 0.4rem 0 0 0; flex-wrap: wrap; position: relative;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    align-items: center;
+    min-height: 3.2rem;
+    width: 100%;
+    box-sizing: border-box;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    border: 2px solid rgba(182, 173, 144, 0.4);
+    padding: 0.5rem 1rem;
+    border-radius: 10px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    margin: 0.4rem 0 0 0;
+    flex-wrap: wrap;
+    position: relative;
   }
 
   .reverse, .undo, .redo, .jumpstart, .jumpend {
-    background-color: var(--btn-idle); width: clamp(35px, 8vw, 40px); height: clamp(35px, 8vw, 40px);
-    border: none; border-radius: 15px; font-size: clamp(16px, 4vw, 20px); color: #e8e8d0; cursor: pointer; transition: all 0.2s ease; flex-shrink: 0;
+    background-color: var(--btn-idle);
+    width: clamp(35px, 8vw, 40px);
+    height: clamp(35px, 8vw, 40px);
+    border: none;
+    border-radius: 15px;
+    font-size: clamp(16px, 4vw, 20px);
+    color: #e8e8d0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
   }
-  .reverse:disabled, .undo:disabled, .redo:disabled, .jumpstart:disabled, .jumpend:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .reverse:hover:not(:disabled), .undo:hover:not(:disabled), .redo:hover:not(:disabled), .jumpstart:hover:not(:disabled), .jumpend:hover:not(:disabled) {
-      background: linear-gradient(145deg, var(--panel-1), var(--panel-2)); border-color: rgba(232, 232, 208, 0.6); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  .reverse:disabled, 
+  .undo:disabled, 
+  .redo:disabled, 
+  .jumpstart:disabled, 
+  .jumpend:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
   }
 
-  .blackeval, .whiteeval { width: 100%; transition: all 0.5s ease; position: relative; }
+  .reverse:hover:not(:disabled), 
+  .undo:hover:not(:disabled), 
+  .redo:hover:not(:disabled), 
+  .reset:hover, 
+  .jumpstart:hover:not(:disabled), 
+  .jumpend:hover:not(:disabled) {
+      background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+      border-color: rgba(232, 232, 208, 0.6);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .blackeval, .whiteeval {
+      width: 100%;
+      transition: all 0.5s ease;
+      position: relative;
+  }
+
   .blackeval { background-color: #38412e; }
   .whiteeval { background-color: #626949; }
 
   .evalnum {
-      font-family: "JetBrains Mono", monospace; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      font-size: clamp(0.8rem, 1.2vw, 1rem); font-weight: 500; color: #fff8ef; text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
-      background: rgba(0, 0, 0, 0.3); padding: 0.25rem 0.5rem; border-radius: 6px; backdrop-filter: blur(4px); z-index: 10;
+      font-family: "JetBrains Mono", monospace;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: clamp(0.8rem, 1.2vw, 1rem);
+      font-weight: 500;
+      color: #fff8ef;
+      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      backdrop-filter: blur(4px);
+      z-index: 10;
   }
 
-  .accuracydescribtion { font-weight: 500; text-align: center; font-size: clamp(1rem, 2.1vw, 1.2rem); margin-top: 1rem; padding: 0 1rem; word-wrap: break-word; }
-  .bestmove { color: #41a24e; text-align: center; font-weight: 600; margin-top: 0.1rem; font-size: clamp(0.9rem, 1rem, 1.1rem); padding: 0 1rem; cursor: pointer; text-decoration: underline; }
+  .accuracydescribtion {
+      font-weight: 500;
+      text-align: center;
+      font-size: clamp(1rem, 2.1vw, 1.2rem);
+      margin-top: 1rem;
+      padding: 0 1rem;
+      word-wrap: break-word;
+  }
+
+  .bestmove {
+      color: #41a24e;
+      text-align: center;
+      font-weight: 600;
+      margin-top: 0.1rem;
+      font-size: clamp(0.9rem, 1rem, 1.1rem);
+      padding: 0 1rem;
+      cursor: pointer;
+      text-decoration: underline;
+  }
+
   .move-data { padding: 0 1rem; }
-  .depthnum { font-family: 'Inter', sans-serif; text-align: center; color: rgba(245, 245, 220, 0.7); font-size: 0.78rem; font-weight: 600; text-transform: uppercase; margin: 0.3rem 0 0.5rem; }
+
+  .depthnum {
+      font-family: 'Inter', sans-serif;
+      text-align: center;
+      color: rgba(245, 245, 220, 0.7);
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      margin: 0.3rem 0 0.5rem;
+  }
 
   .line, .secondline {
-      font-family: "JetBrains Mono", monospace; display: flex; white-space: nowrap; align-items: center; gap: 0.5rem;
-      font-size: clamp(0.85rem, 2vw, 1rem); padding: 0.5rem; margin: 8px 0; background: rgba(0, 0, 0, 0.25);
-      border-radius: 10px; color: #eae4d8; box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4); overflow-x: auto;
+      font-family: "JetBrains Mono", monospace;
+      display: flex;
+      white-space: nowrap;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: clamp(0.85rem, 2vw, 1rem);
+      padding: 0.5rem;
+      margin: 8px 0;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      color: #eae4d8;
+      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
+      overflow-x: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.3)  rgba(0, 0, 0, 0.1); 
   }
+
+  .evalnum2, .evalnum3 {
+      font-size: clamp(1rem, 2vw, 1.3rem);
+      color: #171717;
+      background-color: #606847;
+      border-radius: 10px;
+      flex-shrink: 0;
+      width: 4.4rem;
+      text-align: center;
+  }
+
+  .board-acc-icon {
+      position: absolute;
+      width: 4.5%;
+      height: 4.5%;
+      border-radius: 50%;
+      pointer-events: none;
+  }
+
+  .line-move { cursor: pointer; padding: 0 2px; border-radius: 4px; }
+  .line-move:hover { background: rgba(103, 122, 228, 0.3); }
+
+  .sharebar {
+      display: flex;
+      justify-content: center;
+      gap: 0.6rem;
+      margin-top: 0.9rem;
+      padding: 0 1rem;
+  }
+
+  .sharebtn {
+      background: rgba(0, 0, 0, 0.22);
+      color: #f4f0e3;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 0.4rem 0.8rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+  }
+
+  .sharebtn:hover { background: rgba(103, 122, 228, 0.3); }
+
+  .toast {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20, 20, 20, 0.92);
+      color: #f4f0e3;
+      padding: 0.6rem 1.2rem;
+      border-radius: 999px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      z-index: 1000;
+  }
+
+  .toast-fade-enter-active, .toast-fade-leave-active {
+      transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+
+  .toast-fade-enter-from, .toast-fade-leave-to {
+      opacity: 0;
+      transform: translateX(-50%) translateY(8px);
+  }
+
+  .context-menu {
+    position: fixed;
+    z-index: 2000;
+    background: #2a2a2a;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    min-width: 140px;
+  }
+
+  .context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 0.65rem 1rem;
+    background: transparent;
+    border: none;
+    color: #f4f0e3;
+    font-size: 0.9rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .context-menu-item.delete { color: #ff6b6b; }
+  .context-menu-item.delete:hover { background: rgba(255, 60, 60, 0.2); }
+
+  .report {
+    padding: 1rem;
+    box-sizing: border-box;
+  }
+
+  .report-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+  }
+
+  .report-col {
+    min-width: 0;
+    background: linear-gradient(135deg, var(--list-1), var(--list-2));
+    border-radius: 14px;
+    padding: 0.8rem 0.5rem;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
+    box-sizing: border-box;
+  }
+
+  .report-side-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    font-family: serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #f5f5dc;
+    font-size: 0.78rem;
+    margin-bottom: 0.5rem;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+  }
+
+  .side-swatch {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    display: inline-block;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+    flex-shrink: 0;
+  }
+
+  .white-swatch { background: #f4f0e3; }
+  .black-swatch { background: #1a1a1a; }
+
+  .accuracy-score {
+    font-family: "JetBrains Mono", monospace;
+    font-size: clamp(1.3rem, 6vw, 1.8rem);
+    font-weight: 700;
+    color: #a8d97a;
+    text-align: center;
+    margin: 0.4rem 0 0.7rem;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  }
+
+  .accuracy-score.empty {
+    color: rgba(245, 245, 220, 0.4);
+    font-size: 1.2rem;
+  }
+
+  .accuracy-percent {
+    font-size: 0.6em;
+    opacity: 0.75;
+  }
+
+  .report-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.3rem;
+    border-radius: 8px;
+    transition: background 0.15s ease;
+    min-width: 0;
+  }
+
+  .report-row:hover {
+    background: rgba(0, 0, 0, 0.12);
+  }
+
+  .report-row.dim {
+    opacity: 0.35;
+  }
+
+  .report-row-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  .report-row-label {
+    flex: 1;
+    font-size: 0.76rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .report-row-count {
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 700;
+    color: #f4f0e3;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.76rem;
+    min-width: 1.3rem;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .movesButtons {
+    display: flex;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0 0.5rem;
+  }
+
+  .movehistory {
+    font-family: serif;
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin: 12px 0;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 1px;
+    padding: 0.5rem 0.4rem;
+    border-radius: 5px;
+    background-color: var(--btn-idle);
+    border: none;
+    font-size: clamp(0.7rem, 2vw, 0.95rem);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .explorer {
+    padding: 0.6rem 0.8rem 1rem;
+    box-sizing: border-box;
+  }
+
+  .explorer-status {
+    text-align: center;
+    color: rgba(245, 245, 220, 0.7);
+    font-family: 'Inter', sans-serif;
+    font-size: 0.9rem;
+    padding: 2rem 1rem;
+  }
+
+  .explorer-status.error { color: #ffb0a8; }
+
+  .explorer-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem 0.8rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: 0.6rem;
+  }
+
+  .explorer-eco {
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #9fd8ff;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    padding: 0.1rem 0.4rem;
+    flex-shrink: 0;
+  }
+
+  .explorer-name {
+    font-family: serif;
+    font-weight: 700;
+    color: #f5f5dc;
+    font-size: clamp(0.95rem, 2.2vw, 1.15rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .explorer-table {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .explorer-row {
+    display: grid;
+    grid-template-columns: 3rem 4.2rem 1fr;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.45rem 0.5rem;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.12);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .explorer-row:not(.explorer-row-head):not(.explorer-row-total):hover {
+    background: rgba(103, 122, 228, 0.18);
+  }
+
+  .explorer-row-head {
+    background: transparent;
+    cursor: default;
+    color: rgba(245, 245, 220, 0.55);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 700;
+    padding-bottom: 0.2rem;
+  }
+
+  .explorer-row-total {
+    cursor: default;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: 0.2rem;
+    font-weight: 700;
+  }
+
+  .col-move {
+    font-weight: 700;
+    color: #f4f0e3;
+    font-size: 0.9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .col-games {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+  }
+
+  .games-percent {
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #f4f0e3;
+  }
+
+  .games-count {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.68rem;
+    color: rgba(245, 245, 220, 0.55);
+  }
+
+  .col-split { min-width: 0; }
+
+  .split-bar {
+    display: flex;
+    width: 100%;
+    height: 1.3rem;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+
+  .split-white, .split-draw, .split-black {
+    height: 100%;
+    transition: width 0.3s ease;
+  }
+
+  .split-white { background: #e8e4d8; }
+  .split-draw  { background: #8a8a86; }
+  .split-black { background: #2b2b2b; }
 </style>

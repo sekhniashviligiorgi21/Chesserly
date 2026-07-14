@@ -53,18 +53,6 @@
 <template>
   <div class="title-container">
     <h1 class="title">♔ CHESSERLY</h1>
-
-    <div class="auth-menu">
-      <template v-if="!currentUser">
-        <button class="btn" @click="showAuthModal('login')">Login</button>
-        <button class="btn" @click="showAuthModal('register')">Sign Up</button>
-      </template>
-      <template v-else>
-        <span class="user-email">{{ currentUser.email }}</span>
-        <button class="btn" @click="handleLogout">Logout</button>
-      </template>
-    </div>
-
     <button
       class="btn"
       :style="{ background: `linear-gradient(${bgColor('import')})` }"
