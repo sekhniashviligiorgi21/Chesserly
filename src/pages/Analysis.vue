@@ -1145,44 +1145,47 @@
         p++
       }
       if (phaseCount > 0) phaseAccuracy[phase] = phaseSum / phaseCount
+    }
 
-      const blunderSquares = {};
-      const goodSquares = {};
-      let trackNode = moveTree.children[0];
-      let trackPly = 1;
-      while (trackNode) {
-        const side = trackPly % 2 === 1 ? 'white' : 'black';
-        if (side === myColor) {
-          if (trackNode.accuracy === 'blunder' || trackNode.accuracy === 'mistake') {
-            const square = trackNode.uci.slice(2, 4);
-            blunderSquares[square] = (blunderSquares[square] || 0) + 1;
-          } else if (['brilliant', 'great', 'best', 'excellent'].includes(trackNode.accuracy)) {
-            const square = trackNode.uci.slice(2, 4);
-            goodSquares[square] = (goodSquares[square] || 0) + 1;
-          }
+    // 1. Track Blunders and Good Moves
+    const blunderSquares = {};
+    const goodSquares = {};
+    let trackNode = moveTree.children[0];
+    let trackPly = 1;
+    while (trackNode) {
+      const side = trackPly % 2 === 1 ? 'white' : 'black';
+      if (side === myColor) {
+        if (trackNode.accuracy === 'blunder' || trackNode.accuracy === 'mistake') {
+          const square = trackNode.uci.slice(2, 4);
+          blunderSquares[square] = (blunderSquares[square] || 0) + 1;
+        } else if (['brilliant', 'great', 'best', 'excellent'].includes(trackNode.accuracy)) {
+          const square = trackNode.uci.slice(2, 4);
+          goodSquares[square] = (goodSquares[square] || 0) + 1;
         }
-      const pieceStats = { p: {count: 0, sum: 0}, n: {count: 0, sum: 0}, b: {count: 0, sum: 0}, r: {count: 0, sum: 0}, q: {count: 0, sum: 0}, k: {count: 0, sum: 0} };
-      let pieceNode = moveTree.children[0];
-      let piecePly = 1;
-      while (pieceNode) {
-        const side = piecePly % 2 === 1 ? 'white' : 'black';
-        if (side === myColor && pieceNode.accuracy && pieceNode.san) {
-          let piece = 'p'; // default to pawn
-          const firstChar = pieceNode.san[0];
-          if (['N', 'B', 'R', 'Q', 'K'].includes(firstChar)) {
-            piece = firstChar.toLowerCase();
-          }
-          const weight = weights[pieceNode.accuracy] ?? 0;
-          pieceStats[piece].count++;
-          pieceStats[piece].sum += weight;
-        }
-        pieceNode = pieceNode.children[0];
-        piecePly++;
       }
       trackNode = trackNode.children[0];
       trackPly++;
     }
 
+    // 2. Track Piece Performance (Fixed: extracted from the loop above)
+    const pieceStats = { p: {count: 0, sum: 0}, n: {count: 0, sum: 0}, b: {count: 0, sum: 0}, r: {count: 0, sum: 0}, q: {count: 0, sum: 0}, k: {count: 0, sum: 0} };
+    let pieceNode = moveTree.children[0];
+    let piecePly = 1;
+    while (pieceNode) {
+      const side = piecePly % 2 === 1 ? 'white' : 'black';
+      if (side === myColor && pieceNode.accuracy && pieceNode.san) {
+        let piece = 'p'; // default to pawn
+        const firstChar = pieceNode.san[0];
+        if (['N', 'B', 'R', 'Q', 'K'].includes(firstChar)) {
+          piece = firstChar.toLowerCase();
+        }
+        const weight = weights[pieceNode.accuracy] ?? 0;
+        pieceStats[piece].count++;
+        pieceStats[piece].sum += weight;
+      }
+      pieceNode = pieceNode.children[0];
+      piecePly++;
+    }
 
     const openingName = await fetchOpeningNameForSave(uciList)
 
@@ -1208,6 +1211,7 @@
       const gameDoc = dupSnap.docs[0]
       await updateDoc(doc(db, `users/${currentUserId.value}/games`, gameDoc.id), {
         insights: {
+          myColor, // <-- ADDED THIS so the Colors tab works
           overallAccuracy,
           phaseAccuracy,
           moveCounts: myCounts,
@@ -1228,6 +1232,7 @@
         time_class: 'unknown',
         createdAt: serverTimestamp(),
         insights: {
+          myColor, // <-- ADDED THIS
           overallAccuracy,
           phaseAccuracy,
           moveCounts: myCounts,
