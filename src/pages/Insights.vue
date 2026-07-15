@@ -1,5 +1,5 @@
 <script setup>
-  import { ref, computed, onMounted } from 'vue'
+  import { ref, computed, onMounted, watch } from 'vue'
   import Title from '../assets/Title.vue'
   import { auth, db } from '../firebase'
   import { onAuthStateChanged } from 'firebase/auth'
