@@ -1161,6 +1161,24 @@
             goodSquares[square] = (goodSquares[square] || 0) + 1;
           }
         }
+      const pieceStats = { p: {count: 0, sum: 0}, n: {count: 0, sum: 0}, b: {count: 0, sum: 0}, r: {count: 0, sum: 0}, q: {count: 0, sum: 0}, k: {count: 0, sum: 0} };
+      let pieceNode = moveTree.children[0];
+      let piecePly = 1;
+      while (pieceNode) {
+        const side = piecePly % 2 === 1 ? 'white' : 'black';
+        if (side === myColor && pieceNode.accuracy && pieceNode.san) {
+          let piece = 'p'; // default to pawn
+          const firstChar = pieceNode.san[0];
+          if (['N', 'B', 'R', 'Q', 'K'].includes(firstChar)) {
+            piece = firstChar.toLowerCase();
+          }
+          const weight = weights[pieceNode.accuracy] ?? 0;
+          pieceStats[piece].count++;
+          pieceStats[piece].sum += weight;
+        }
+        pieceNode = pieceNode.children[0];
+        piecePly++;
+      }
       trackNode = trackNode.children[0];
       trackPly++;
     }
@@ -1196,7 +1214,8 @@
           totalMoves: myMoveCount,
           opening: openingName,
           blunderSquares,
-          goodSquares
+          goodSquares,
+          pieceStats
         }
       })
     } else {
@@ -1215,7 +1234,8 @@
           totalMoves: myMoveCount,
           opening: openingName,
           blunderSquares,
-          goodSquares
+          goodSquares,
+          pieceStats
         }
       })
     }
