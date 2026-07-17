@@ -88,6 +88,17 @@ function enterLichessCooldown() {
     }
 }
 
+// ---- Cloud Eval Game Disable State -------------------------------------
+let cloudEvalDisabledForGame = false
+
+/**
+ * Resets the cloud eval disabled state. 
+ * Call this when loading a new game to re-enable cloud eval fetches.
+ */
+export function resetCloudEvalState() {
+    cloudEvalDisabledForGame = false
+}
+
 const STARTPOS_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
 export async function startEngine() {
@@ -362,7 +373,9 @@ function isSacrifice(beforeFen, afterFen, move) {
 }
 
 async function getCloudEval(fen, multiPV) {
-    if (isLichessOnCooldown()) return null
+    // Stop fetching entirely if the position has fallen out of the cloud API 
+    // for the remainder of the current game.
+    if (cloudEvalDisabledForGame || isLichessOnCooldown()) return null
 
     const cacheKey = `${fen}|${multiPV}`
 
@@ -385,6 +398,13 @@ async function getCloudEval(fen, multiPV) {
             return null
         }
 
+        // 404 indicates the position is not in the cloud database.
+        // Disable all future cloud eval lookups for this game.
+        if (response.status === 404) {
+            cloudEvalDisabledForGame = true
+            return null
+        }
+
         if (!response.ok) {
             cloudEvalCache.set(cacheKey, null)
             cloudEvalDirty = true
@@ -397,6 +417,9 @@ async function getCloudEval(fen, multiPV) {
             cloudEvalCache.set(cacheKey, null)
             cloudEvalDirty = true
             schedulePersist()
+            
+            // Extra fallback: if it returns ok but no PVs, treat it as out-of-cloud.
+            cloudEvalDisabledForGame = true
             return null
         }
 

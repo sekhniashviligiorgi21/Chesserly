@@ -8,7 +8,7 @@
   import 'vue3-chessboard/style.css'
   import Title from "../assets/Title.vue"
   import SettingsPanel from "../assets/SettingsPanel.vue"
-  import { startEngine, getEvaluation, cancelAnalysis, setOnLichessRateLimited } from "../engine/engine.js"
+  import { startEngine, getEvaluation, cancelAnalysis, setOnLichessRateLimited, resetCloudEvalState } from "../engine/engine.js"
   import { useRoute, useRouter } from 'vue-router'
 
   const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
@@ -586,6 +586,7 @@
   }
 
   function resetBoard() {
+    resetCloudEvalState()
     chess.reset()
     boardAPI.value.setPosition(chess.fen())
     movesListUCI.value = []
@@ -946,6 +947,7 @@
   }
 
   async function loadFen(fen){
+    resetCloudEvalState()
     chess.load(fen)
     moveTree.fen = fen
     currentNode.value = moveTree
@@ -953,6 +955,7 @@
   }
 
   async function loadImportedGame(uciList) {
+    resetCloudEvalState()
     isImporting.value = true
     importCancelled = false
     importProgress.value = { current: 0, total: uciList.length }
