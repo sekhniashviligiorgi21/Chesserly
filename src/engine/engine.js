@@ -1,3 +1,5 @@
+import { Chess } from 'chess.js'
+
 const LICHESS_TOKEN = import.meta.env.VITE_LICHESS_TOKEN
 
 let sf = null
@@ -214,6 +216,66 @@ function normalizeCastlingUci(uci) {
 
 function normalizeLine(line) {
     return line.map(normalizeCastlingUci)
+}
+
+// ---- Sacrifice Detection -------------------------------------------------
+// A move is treated as a "sacrifice" if, once the engine's own predicted
+// continuation is played out a few plies deep, the side that made the move
+// ends up down material compared to before the move — i.e. material was
+// given up and hasn't (yet) come back. We can't tell this from the single
+// before/after FEN alone, because a hung piece only shows up as a material
+// loss once the opponent actually takes it — so we walk forward through the
+// engine's own PV (which your pipeline already computes as `best_line`).
+const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 }
+const SACRIFICE_MATERIAL_THRESHOLD = 2 // an exchange or more, given up for no immediate return
+const SACRIFICE_SETTLE_PLIES = 6       // how far into the engine's line to walk before judging
+
+function materialBalance(fen, moverIsWhite) {
+    const board = fen.split(' ')[0]
+    let white = 0, black = 0
+    for (const ch of board) {
+        if (ch === '/' || /\d/.test(ch)) continue
+        const value = PIECE_VALUES[ch.toLowerCase()] || 0
+        if (ch === ch.toUpperCase()) white += value
+        else black += value
+    }
+    return moverIsWhite ? (white - black) : (black - white)
+}
+
+function applyLineAndGetFen(startFen, uciLine, maxPlies) {
+    let chess
+    try {
+        chess = new Chess(startFen)
+    } catch (error) {
+        return startFen
+    }
+
+    for (const uci of (uciLine || []).slice(0, maxPlies)) {
+        const from = uci.slice(0, 2)
+        const to = uci.slice(2, 4)
+        const promotion = uci.length > 4 ? uci.slice(4).toLowerCase() : undefined
+        try {
+            const result = chess.move({ from, to, promotion })
+            if (!result) break
+        } catch (error) {
+            break
+        }
+    }
+    return chess.fen()
+}
+
+function isSacrifice(beforeFen, afterFen, moverIsWhite, continuationLine) {
+    if (!beforeFen || !afterFen) return false
+
+    const balanceBefore = materialBalance(beforeFen, moverIsWhite)
+
+    const settledFen = (continuationLine && continuationLine.length)
+        ? applyLineAndGetFen(afterFen, continuationLine, SACRIFICE_SETTLE_PLIES)
+        : afterFen
+
+    const balanceAfter = materialBalance(settledFen, moverIsWhite)
+
+    return (balanceBefore - balanceAfter) >= SACRIFICE_MATERIAL_THRESHOLD
 }
 
 async function getCloudEval(fen, multiPV) {
@@ -434,15 +496,22 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, bef
         }
 
         let accuracy = "none"
+        let is_sacrifice = false
+
         if (move) {
             if (isBook) {
                 accuracy = "book"
             } else if (best_move === move && top_moves.length >= 2) {
-                // NEW BRILLIANT LOGIC (Without SF11)
-                // If the best move is >2.0 pawns better than the 2nd best, it's brilliant.
-                // If it's >1.0 pawn better, it's great.
-                if (brilliant_loss > 200) {
-                    accuracy = "brilliant"
+                // "Only best move" — kept from the original brilliant_loss check:
+                // the played move has to be clearly ahead of every alternative.
+                const isOnlyBestMove = brilliant_loss > 200
+
+                if (isOnlyBestMove) {
+                    // Brilliant now requires BOTH: it's the only good move here,
+                    // AND it gives up material to get there. Being uniquely best
+                    // alone just makes it "great".
+                    is_sacrifice = isSacrifice(beforeFen, afterFen, side_to_move === "w", best_line)
+                    accuracy = is_sacrifice ? "brilliant" : "great"
                 } else if (brilliant_loss > 100) {
                     accuracy = "great"
                 } else {
@@ -539,6 +608,7 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, bef
             excellent_eval: topMovesAfter[1]?.Centipawn ?? null,
             third_eval: topMovesAfter[2]?.Centipawn ?? null,
             move_accuracy: accuracy,
+            is_sacrifice,
             best_line,
             excellent_line,
             third_line,
