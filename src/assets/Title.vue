@@ -107,7 +107,7 @@
   }
 
   .title {
-    font-family: serif;
+    font-family: "Trebuchet MS", "Century Gothic", system-ui, sans-serif;
     text-align: center;
     margin-top: 2rem;
     margin-bottom: 2rem;
