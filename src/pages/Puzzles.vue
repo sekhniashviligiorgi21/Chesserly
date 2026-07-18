@@ -24,6 +24,7 @@
   const currentPuzzle = shallowRef(null)
   const status = ref('idle') // 'idle', 'correct', 'wrong'
   const message = ref('Find the best move for your side.')
+  const messageColor = ref('#f4f0e3')
   const blunderSan = ref('')
   
   const userRating = ref(Number(localStorage.getItem('chesslab_puzzle_rating')) || 1200)
@@ -64,7 +65,6 @@
         const data = docSnap.data()
         if (data.puzzles && Array.isArray(data.puzzles)) {
           data.puzzles.forEach((p, i) => {
-            // Only fetch puzzles that have NOT been solved yet
             if (p.fen && p.bestMove && !p.solved) {
               temp.push({ ...p, id: `${docSnap.id}_${i}`, gameId: docSnap.id, indexInArray: i })
             }
@@ -121,6 +121,13 @@
     }
   }
 
+  function formatEval(evalObj) {
+    if (!evalObj) return "0.0"
+    if (evalObj.type === "cp") return (evalObj.value / 100).toFixed(2)
+    if (evalObj.type === "mate") return `M${evalObj.value}`
+    return ""
+  }
+
   function updateEvalBar() {
     if (!currentPuzzle.value || !currentPuzzle.value.eval) {
       evalHeight.value = 50
@@ -144,22 +151,19 @@
       puzzlesExhausted.value = true
       status.value = 'correct' 
       message.value = "No more puzzles left. Analyze more games to see more!"
+      messageColor.value = '#a8d97a'
       return
     }
 
     currentPuzzle.value = puzzleQueue.value.pop()
     status.value = 'idle'
     message.value = `Find the best move for ${currentPuzzle.value.turn === 'white' ? 'White' : 'Black'}.`
+    messageColor.value = '#f4f0e3'
     
-    // Reset Eval Bar to 50/50 while thinking
     evalHeight.value = 50
     evalNumber.value = '0.0'
     
-    // Calculate the SAN for the blunder move
-    const blunderUci = currentPuzzle.value.playedMove || 
-                       currentPuzzle.value.blunderMove || 
-                       currentPuzzle.value.userMove
-                       
+    const blunderUci = currentPuzzle.value.playedMove || currentPuzzle.value.blunderMove || currentPuzzle.value.userMove
     if (blunderUci) {
       try {
         const tempChess = new Chess(currentPuzzle.value.fen)
@@ -213,14 +217,13 @@
       const totalPoints = basePoints + streakBonus
       
       status.value = 'correct'
-      message.value = streak.value > 1 ? `Correct! +${totalPoints} points (🔥 ${streak.value}x Streak Bonus).` : `Correct! +${basePoints} Rating points.`
+      message.value = streak.value > 1 ? `Correct! +${totalPoints} points (🔥 ${streak.value}x Streak).` : `Correct! +${basePoints} Rating points.`
+      messageColor.value = '#a8d97a'
       updateRating(totalPoints)
       sessionStats.value.solved++
       
-      // Reveal eval bar
       updateEvalBar()
 
-      // Mark puzzle as solved in Firestore so it doesn't appear after refresh
       if (currentUser.value && currentPuzzle.value.gameId && currentPuzzle.value.indexInArray !== undefined) {
         try {
           const gameRef = doc(db, `users/${currentUser.value.uid}/games`, currentPuzzle.value.gameId)
@@ -238,13 +241,12 @@
         updateRating(-10)
         sessionStats.value.failed++
         message.value = 'Not the best move. -10 Rating points.'
+        messageColor.value = '#ffb0a8'
       } else {
         message.value = 'Still not the best move. Try again or view the solution.'
       }
       
       status.value = 'wrong'
-      
-      // Reveal eval bar to show why the best move is good
       updateEvalBar()
       
       if (boardAPI.value) {
@@ -264,6 +266,7 @@
     }
     status.value = 'wrong'
     message.value = 'Better luck next time!'
+    messageColor.value = '#ffb0a8'
     
     updateEvalBar()
     
@@ -278,6 +281,7 @@
   function retryPuzzle() {
     status.value = 'idle'
     message.value = `Find the best move for ${currentPuzzle.value.turn === 'white' ? 'White' : 'Black'}.`
+    messageColor.value = '#f4f0e3'
     evalHeight.value = 50
     evalNumber.value = '0.0'
     if (boardAPI.value) {
@@ -288,104 +292,113 @@
 </script>
 
 <template>
-  <div class="page-layout">
-    <Title />
-    <div class="content-area">
-      <div class="puzzle-card">
-        <div class="puzzle-header">
-          <div>
-            <h1 class="puzzle-title">Learn from your mistakes</h1>
-            <p class="puzzle-subtitle">Train your tactical vision using positions from your own past blunders.</p>
-          </div>
-          <div class="rating-badge">
-            <span class="rating-label">Puzzle Rating</span>
-            <span class="rating-value">🏆 {{ userRating }}</span>
-            <span v-if="streak > 1" class="streak-badge">🔥 {{ streak }} Streak</span>
-          </div>
-        </div>
+  <div class="grid-layout">
+    <Title class="title-slot" />
+    
+    <div class="board-area">
+      <div v-if="loading" class="empty-state">
+        <div class="loading-spinner"><div class="spinner-ring"></div><div class="spinner-ring"></div><div class="spinner-ring"></div></div>
+        <p>Loading your puzzles...</p>
+      </div>
 
-        <div v-if="loading" class="empty-state">
-          <div class="loading-spinner"><div class="spinner-ring"></div><div class="spinner-ring"></div><div class="spinner-ring"></div></div>
-          <p>Loading your puzzles...</p>
-        </div>
+      <div v-else-if="!currentUser" class="empty-state"><p>Please log in to access your puzzles.</p></div>
+      
+      <div v-else-if="allPuzzles.length === 0 && puzzlesExhausted" class="empty-state">
+        <p>No puzzles left!</p>
+        <p class="muted">Analyze more games to automatically generate new puzzles.</p>
+      </div>
 
-        <div v-else-if="!currentUser" class="empty-state"><p>Please log in to access your puzzles.</p></div>
+      <div v-else class="board-wrapper">
+        <div class="player-bar">
+          <span class="player-color-dot" :class="currentPuzzle?.turn"></span>
+          <span class="player-name">{{ currentPuzzle?.turn === 'white' ? 'White to Play' : 'Black to Play' }}</span>
+        </div>
         
-        <div v-else-if="allPuzzles.length === 0 && puzzlesExhausted" class="empty-state">
-          <p>No puzzles left!</p>
-          <p class="muted">Analyze more games to automatically generate new puzzles.</p>
+        <div class="board-row">
+          <div class="evalbar">
+            <div class="evalbar-inner">
+              <template v-if="!isFlipped">
+                <div class="blackeval" :style="{ height: evalHeight + '%' }"></div>
+                <div class="whiteeval" :style="{ height: (100 - evalHeight) + '%' }"></div>
+              </template>
+              <template v-else>
+                <div class="whiteeval" :style="{ height: (100 - evalHeight) + '%' }"></div>
+                <div class="blackeval" :style="{ height: evalHeight + '%' }"></div>
+              </template>
+            </div>
+            <p class="evalnum">{{ evalNumber }}</p>
+          </div>
+
+          <div class="board-col">
+            <TheChessboard 
+              class="game-board"
+              @move="handleMove" 
+              @board-created="onBoardCreated" 
+              :board-config="{ coordinates: true, animation: { enabled: false } }" 
+            />
+          </div>
         </div>
 
-        <div v-else class="puzzle-interface">
-          <div class="board-side">
-            <div class="board-row">
-              <!-- Evaluation Bar -->
-              <div class="evalbar" v-if="currentPuzzle">
-                <div class="evalbar-inner">
-                  <div class="blackeval" :style="{ height: evalHeight + '%' }"></div>
-                  <div class="whiteeval" :style="{ height: (100 - evalHeight) + '%' }"></div>
-                </div>
-                <p class="evalnum">{{ evalNumber }}</p>
-              </div>
-
-              <div class="board-wrapper">
-                <TheChessboard 
-                  class="game-board"
-                  @move="handleMove" 
-                  @board-created="onBoardCreated" 
-                  :board-config="{ coordinates: true, animation: { enabled: false } }" 
-                />
-              </div>
-            </div>
-          </div>
+        <div class="player-bar bottom">
+          <span class="player-color-dot" :class="currentPuzzle?.turn === 'white' ? 'black' : 'white'"></span>
+          <span class="player-name">Your Past Self</span>
+          <span class="player-rating">🏆 {{ userRating }}</span>
+          <span v-if="streak > 1" class="streak-badge">🔥 {{ streak }}</span>
+        </div>
+        
+        <div class="boardtools">
+          <button v-if="status === 'idle'" class="tool-btn" @click="showSolution">
+            Show Solution
+          </button>
+          <button v-else-if="status === 'wrong'" class="tool-btn" @click="retryPuzzle">
+            Retry Puzzle
+          </button>
           
-          <div class="info-side">
-            <div class="status-box" :class="status">
-              <p>{{ message }}</p>
-            </div>
+          <button 
+            class="tool-btn primary" 
+            @click="loadRandomPuzzle" 
+            :disabled="puzzlesExhausted"
+          >
+            <span v-if="puzzlesExhausted">All Solved!</span>
+            <span v-else>Next Puzzle →</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="analysis-container">
+      <div class="analyze">
+        <div class="analyzis-header">
+          <h2 class="analyzis">Puzzle</h2>
+        </div>
+        <div class="move-data">
+          <p class="accuracydescribtion" :style="{color: messageColor}">{{ message }}</p>
+          
+          <div class="blunder-context" v-if="currentPuzzle && !puzzlesExhausted">
+            <span class="context-label">In your actual game, you played:</span>
+            <span class="blunder-move">{{ blunderSan }}</span>
+          </div>
+        </div>
+      </div>
 
-            <div class="blunder-context" v-if="currentPuzzle && !puzzlesExhausted">
-              <span class="context-label">In your actual game, you played:</span>
-              <span class="blunder-move">{{ blunderSan }}</span>
+      <div class="moves">
+        <div class="movesButtons">
+          <button class="movehistory active">Session</button>
+        </div>
+        
+        <div class="report" style="padding: 1rem;">
+          <div class="session-stats-grid">
+            <div class="stat-card">
+              <span class="stat-val solved">{{ sessionStats.solved }}</span>
+              <span class="stat-key">Solved</span>
             </div>
-
-            <div class="puzzle-meta" v-if="currentPuzzle && !puzzlesExhausted">
-              <span class="meta-label">Side to move</span>
-              <span class="meta-value">{{ currentPuzzle?.turn === 'white' ? 'White' : 'Black' }}</span>
+            <div class="stat-card">
+              <span class="stat-val failed">{{ sessionStats.failed }}</span>
+              <span class="stat-key">Failed</span>
             </div>
-
-            <div class="session-stats">
-              <div class="stat-box">
-                <span class="stat-val solved">{{ sessionStats.solved }}</span>
-                <span class="stat-key">Solved</span>
-              </div>
-              <div class="stat-box">
-                <span class="stat-val failed">{{ sessionStats.failed }}</span>
-                <span class="stat-key">Failed</span>
-              </div>
-              <div class="stat-box">
-                <span class="stat-val remaining">{{ puzzleQueue.length }}</span>
-                <span class="stat-key">Remaining</span>
-              </div>
-            </div>
-
-            <div class="action-buttons">
-              <button v-if="status === 'idle'" class="action-btn hint-btn" @click="showSolution">
-                Show Solution (-10)
-              </button>
-              <button v-else-if="status === 'wrong'" class="action-btn retry-btn" @click="retryPuzzle">
-                Retry Puzzle
-              </button>
-              
-              <button 
-                class="action-btn next-btn" 
-                @click="loadRandomPuzzle" 
-                :disabled="puzzlesExhausted"
-                :class="{ disabled: puzzlesExhausted }"
-              >
-                <span v-if="puzzlesExhausted">All puzzles solved!</span>
-                <span v-else>Next Puzzle →</span>
-              </button>
+            <div class="stat-card">
+              <span class="stat-val remaining">{{ puzzleQueue.length }}</span>
+              <span class="stat-key">Remaining</span>
             </div>
           </div>
         </div>
@@ -397,104 +410,47 @@
 <style scoped>
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
 
-  .page-layout {
+  .grid-layout {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     padding: clamp(0.5rem, 3vw, 1rem);
     display: grid;
     grid-template-columns: 1fr;
-    gap: 1.25rem;
-    justify-self: center;
-    min-width: 100%; 
+    grid-template-areas:
+      "title"
+      "board"
+      "analysis";
+    gap: 1.5rem;
+    max-width: 1600px;
     margin: 0 auto;
     box-sizing: border-box;
   }
 
   @media (min-width: 768px) {
-    .page-layout {
+    .grid-layout {
       grid-template-columns: auto 1fr;
-      gap: 1.5rem;
+      grid-template-areas:
+        "title board"
+        "title analysis";
+      gap: 1rem;
     }
   }
 
-  .content-area {
+  @media (min-width: 1200px) {
+    .grid-layout {
+      grid-template-columns: auto 2fr 1fr;
+      grid-template-areas: "title board analysis";
+      gap: 2rem;
+    }
+  }
+
+  .title-slot { grid-area: title; min-width: 0; }
+
+  .board-area {
+    grid-area: board;
     display: flex;
-    justify-content: stretch;
+    justify-content: center;
     width: 100%;
     min-width: 0;
-  }
-
-  .puzzle-card {
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    padding: clamp(1.5rem, 3vw, 2.5rem);
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 18px;
-    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
-    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  }
-
-  .puzzle-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    flex-wrap: wrap;
-    gap: 1rem;
-  }
-
-  .puzzle-title {
-    font-family: serif;
-    color: #f5f5dc;
-    font-weight: 700;
-    text-transform: uppercase;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
-    letter-spacing: 2px;
-    font-size: clamp(1.3rem, 3vw, 1.7rem);
-    margin: 0 0 0.4rem;
-  }
-
-  .puzzle-subtitle {
-    color: rgba(244, 240, 227, 0.72);
-    font-size: 0.9rem;
-    margin: 0;
-  }
-
-  .rating-badge {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    background: rgba(0, 0, 0, 0.3);
-    padding: 0.75rem 1.25rem;
-    border-radius: 12px;
-    border: 1px solid var(--text-highlight);
-    gap: 0.25rem;
-  }
-
-  .rating-label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: rgba(244, 240, 227, 0.6);
-  }
-
-  .rating-value {
-    font-family: "JetBrains Mono", monospace;
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: var(--text-highlight);
-  }
-
-  .streak-badge {
-    background: rgba(255, 165, 0, 0.2);
-    color: #ffb74d;
-    font-size: 0.75rem;
-    font-weight: 700;
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 165, 0, 0.4);
   }
 
   .empty-state {
@@ -502,7 +458,8 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    flex: 1;
+    width: 100%;
+    height: 60vh;
     gap: 0.5rem;
     color: rgba(244, 240, 227, 0.6);
     font-size: 1rem;
@@ -534,85 +491,37 @@
   .spinner-ring:nth-child(3) { inset: 14px; border-top-color: #f4f0e3; animation-duration: 2s; }
   @keyframes spinRing { to { transform: rotate(360deg); } }
 
-  .puzzle-interface {
-    display: flex;
-    gap: 2rem;
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
-  .board-side {
-    flex: 1 1 300px;
-    min-width: 0;
-    max-width: 600px;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .board-row {
-    display: flex;
-    gap: 0.75rem;
-    width: 100%;
-  }
-
-  .evalbar {
-    width: clamp(24px, 4vw, 35px);
-    flex-shrink: 0;
-    position: relative;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
-    background: #38412e;
-  }
-
-  .evalbar-inner {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    width: 100%;
-  }
-
-  .blackeval, .whiteeval {
-    width: 100%;
-    transition: height 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .blackeval { background-color: #38412e; }
-  .whiteeval { background-color: #626949; }
-
-  .evalnum {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    font-size: clamp(0.6rem, 1vw, 0.75rem);
-    font-weight: 600;
-    color: #fff8ef;
-    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
-    background: rgba(0, 0, 0, 0.3);
-    padding: 0.15rem 0.3rem;
-    border-radius: 4px;
-    backdrop-filter: blur(4px);
-    z-index: 10;
-    white-space: nowrap;
-  }
-
   .board-wrapper {
-    flex: 1;
-    aspect-ratio: 1/1;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+    position: relative;
+    width: 100%;
+    max-width: min(95vw, 38rem); 
+    min-width: 0;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .board-col {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
   }
 
   .game-board {
     width: 100% !important;
-    height: 100% !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1 !important;
+    display: block;
   }
 
   :deep(.cg-wrap) {
+    overflow: hidden;
     width: 100% !important;
     height: 100% !important;
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+    border-radius: 8px;
   }
 
   :deep(cg-board) {
@@ -625,40 +534,211 @@
     background-size: 25% 25% !important;
   }
 
-  .info-side {
-    flex: 1 1 250px;
+  .board-row {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    width: 100%;
+  }
+
+  .evalbar {
+    width: clamp(24px, 4vw, 40px);
+    flex-shrink: 0;
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
   }
 
-  .status-box {
-    padding: 1.5rem;
-    border-radius: 12px;
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    text-align: center;
+  .evalbar-inner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
+  }
+
+  .blackeval, .whiteeval {
+    width: 100%;
+    transition: height 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .blackeval { background-color: #38412e; }
+  .whiteeval { background-color: #626949; }
+
+  .evalnum {
+    font-family: "JetBrains Mono", monospace;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: clamp(0.62rem, 1vw, 0.85rem);
     font-weight: 600;
-    font-size: 1.1rem;
-    color: #f4f0e3;
-    min-height: 80px;
+    color: #fff8ef;
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.25rem 0.4rem;
+    border-radius: 6px;
+    backdrop-filter: blur(4px);
+    z-index: 10;
+    white-space: nowrap;
+    width: max-content;
+  }
+
+  .player-bar {
     display: flex;
     align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.7rem;
+    margin-bottom: 0.2rem;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.22);
+    color: #f4f0e3;
+    font-family: 'Inter', sans-serif;
+    font-size: clamp(0.82rem, 1.8vw, 0.95rem);
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .player-bar.bottom {
+    margin-bottom: 0;
+    margin-top: 0.2rem;
+  }
+
+  .player-color-dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+  }
+
+  .player-color-dot.white { background: #f4f0e3; }
+  .player-color-dot.black { background: #1a1a1a; }
+
+  .player-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .player-rating {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8em;
+    color: rgba(244, 240, 227, 0.75);
+    margin-left: auto;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    padding: 0.05rem 0.4rem;
+    flex-shrink: 0;
+  }
+
+  .streak-badge {
+    background: rgba(255, 165, 0, 0.2);
+    color: #ffb74d;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 165, 0, 0.4);
+  }
+
+  .boardtools {
+    display: flex;
+    gap: 0.75rem;
     justify-content: center;
-    transition: all 0.3s ease;
+    align-items: center;
+    min-height: 3.2rem;
+    width: 100%;
+    box-sizing: border-box;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    border: 2px solid rgba(182, 173, 144, 0.4);
+    padding: 0.5rem 1rem;
+    border-radius: 10px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    margin: 0.4rem 0 0 0;
+    flex-wrap: wrap;
+    position: relative;
   }
 
-  .status-box.correct {
-    background: rgba(106, 209, 63, 0.15);
-    border-color: #8fd97a;
-    color: #a8d97a;
+  .tool-btn {
+    background-color: var(--btn-idle);
+    border: none;
+    border-radius: 8px;
+    padding: 0.6rem 1.5rem;
+    font-size: clamp(0.85rem, 2vw, 1rem);
+    font-weight: 600;
+    color: #e8e8d0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1;
   }
 
-  .status-box.wrong {
-    background: rgba(255, 100, 90, 0.15);
-    border-color: #ff8a80;
-    color: #ffb0a8;
+  .tool-btn.primary {
+    background-color: var(--btn-active);
+    color: #f5f5dc;
   }
+
+  .tool-btn:hover:not(:disabled) {
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .tool-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .analysis-container { grid-area: analysis; display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+
+  .analyze {
+    border-radius: 15px;
+    width: 100%;
+    max-width: 500px;
+    min-height: 180px;
+    padding-bottom: 1rem;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    box-sizing: border-box;
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin: auto;
+  }
+
+  @media (min-width: 1200px) { .analyze { max-width: 20rem; } }
+
+  .analyzis-header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 3rem;
+    padding: 1rem 1rem 0.5rem;
+  }
+
+  .analyzis {
+    font-family: serif;
+    color: #f5f5dc;
+    font-weight: 700;
+    text-transform: uppercase;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 2px;
+    font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+    margin: 0;
+  }
+
+  .accuracydescribtion {
+    font-weight: 500;
+    text-align: center;
+    font-size: clamp(1rem, 2.1vw, 1.2rem);
+    margin-top: 1rem;
+    padding: 0 1rem;
+    word-wrap: break-word;
+    transition: color 0.3s ease;
+  }
+
+  .move-data { padding: 0 1rem; }
 
   .blunder-context {
     display: flex;
@@ -668,6 +748,7 @@
     border: 1px dashed rgba(255, 100, 90, 0.3);
     padding: 0.85rem 1rem;
     border-radius: 8px;
+    margin-top: 1.5rem;
   }
 
   .context-label {
@@ -682,49 +763,69 @@
     color: #ff8a80;
   }
 
-  .puzzle-meta {
+  .moves {
+    margin-top: 10px;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    border-radius: 16px;
+    width: 100%;
+    max-width: 500px;
+    height: clamp(250px, 40vh, 400px);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin: 0 auto;
+    scrollbar-width: thin;
+  }
+
+  @media (min-width: 1200px) { .moves { max-width: 20rem; } }
+
+  .movesButtons {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: rgba(0,0,0,0.2);
-    padding: 0.75rem 1rem;
-    border-radius: 8px;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0 0.5rem;
   }
 
-  .meta-label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: rgba(244, 240, 227, 0.6);
-  }
-
-  .meta-value {
-    font-family: "JetBrains Mono", monospace;
+  .movehistory.active {
+    font-family: serif;
+    text-align: center;
+    color: #f5f5dc;
     font-weight: 700;
-    color: var(--text-highlight);
-    text-transform: capitalize;
+    text-transform: uppercase;
+    margin: 12px 0;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 1px;
+    padding: 0.5rem 0.4rem;
+    border-radius: 5px;
+    background-color: var(--btn-active);
+    border: none;
+    font-size: clamp(0.7rem, 2vw, 0.95rem);
+    width: 100%;
+    cursor: pointer;
   }
 
-  .session-stats {
+  .session-stats-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 0.75rem;
   }
 
-  .stat-box {
-    background: rgba(0,0,0,0.2);
-    border: 1px solid rgba(255,255,255,0.05);
-    padding: 0.75rem;
-    border-radius: 8px;
+  .stat-card {
+    background: linear-gradient(135deg, var(--list-1), var(--list-2));
+    border-radius: 12px;
+    padding: 1rem 0.5rem;
     text-align: center;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.5rem;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
   }
 
   .stat-val {
     font-family: "JetBrains Mono", monospace;
-    font-size: 1.3rem;
+    font-size: clamp(1.3rem, 4vw, 1.8rem);
     font-weight: 700;
   }
 
@@ -737,47 +838,5 @@
     text-transform: uppercase;
     letter-spacing: 1px;
     color: rgba(244, 240, 227, 0.5);
-  }
-
-  .action-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    margin-top: auto;
-  }
-
-  .action-btn {
-    padding: 0.85rem 1rem;
-    border-radius: 8px;
-    border: none;
-    font-weight: 600;
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    color: #f4f0e3;
-  }
-
-  .hint-btn {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-
-  .retry-btn {
-    background: var(--btn-idle);
-  }
-
-  .next-btn {
-    background: var(--btn-active);
-  }
-
-  .action-btn:hover:not(.disabled) {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  }
-
-  .action-btn.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    background: #555 !important;
   }
 </style>
