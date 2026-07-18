@@ -17,21 +17,23 @@
 
   const currentUser = ref(null)
   const allPuzzles = ref([])
-  const puzzleQueue = ref([]) // Used to prevent duplicate puzzles
+  const puzzleQueue = ref([]) 
   const loading = ref(true)
+  const puzzlesExhausted = ref(false)
   
   const currentPuzzle = shallowRef(null)
   const status = ref('idle') // 'idle', 'correct', 'wrong'
   const message = ref('Find the best move for your side.')
-  const blunderSan = ref('') // Holds formatted move (e.g., Nf3)
+  const blunderSan = ref('')
   
   const userRating = ref(Number(localStorage.getItem('chesslab_puzzle_rating')) || 1200)
   const boardAPI = shallowRef(null)
   const chess = new Chess()
   const isFlipped = ref(false)
 
-  // Session Stats
+  // Session Stats & Streaks
   const sessionStats = ref({ solved: 0, failed: 0 })
+  const streak = ref(0)
 
   onMounted(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -67,7 +69,9 @@
       })
       
       allPuzzles.value = temp
-      sessionStats.value = { solved: 0, failed: 0 } // Reset stats on new fetch
+      sessionStats.value = { solved: 0, failed: 0 }
+      streak.value = 0
+      puzzlesExhausted.value = false
       
       if (allPuzzles.value.length > 0) {
         prepareQueue()
@@ -81,7 +85,6 @@
   }
 
   function prepareQueue() {
-    // Copy and shuffle array for random order without duplicates
     puzzleQueue.value = [...allPuzzles.value].sort(() => Math.random() - 0.5)
   }
 
@@ -115,20 +118,24 @@
   }
 
   function loadRandomPuzzle() {
-    if (allPuzzles.value.length === 0) return
-    
-    // If queue is empty, reset it
     if (puzzleQueue.value.length === 0) {
-      prepareQueue()
-      message.value = "You've completed all puzzles! Reshuffling..."
+      puzzlesExhausted.value = true
+      status.value = 'correct' // Hack to hide retry button and keep board green
+      message.value = "You've completed all puzzles! Great job."
+      return
     }
 
     currentPuzzle.value = puzzleQueue.value.pop()
     status.value = 'idle'
     message.value = `Find the best move for ${currentPuzzle.value.turn === 'white' ? 'White' : 'Black'}.`
     
-    // Calculate the SAN (Standard Algebraic Notation) for the blunder move
-    const blunderUci = currentPuzzle.value.blunderMove || currentPuzzle.value.userMove || ''
+    // Calculate the SAN for the blunder move (checking multiple common property names)
+    const blunderUci = currentPuzzle.value.blunderMove || 
+                       currentPuzzle.value.userMove || 
+                       currentPuzzle.value.playedMove || 
+                       currentPuzzle.value.actualMove || 
+                       currentPuzzle.value.playerMove
+                       
     if (blunderUci) {
       try {
         const tempChess = new Chess(currentPuzzle.value.fen)
@@ -139,14 +146,15 @@
         })
         blunderSan.value = moveObj ? moveObj.san : blunderUci
       } catch (e) {
-        blunderSan.value = blunderUci // Fallback to UCI if chess.js fails
+        blunderSan.value = blunderUci 
       }
     } else {
+      // Log the object so you can see what the actual property name is in your database
+      console.log("Could not find blunder move. Puzzle Object:", currentPuzzle.value)
       blunderSan.value = 'Unknown'
     }
     
     if (boardAPI.value) {
-      // Ensure orientation is correct
       const shouldBeFlipped = currentPuzzle.value.turn === 'black'
       if (shouldBeFlipped !== isFlipped.value) {
         boardAPI.value.toggleOrientation()
@@ -160,7 +168,6 @@
   function onBoardCreated(api) {
     boardAPI.value = api
     if (currentPuzzle.value) {
-      // Apply orientation and position on initial mount
       nextTick(() => {
         const shouldBeFlipped = currentPuzzle.value.turn === 'black'
         if (shouldBeFlipped !== isFlipped.value) {
@@ -178,12 +185,17 @@
     const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
     
     if (uci === currentPuzzle.value.bestMove) {
+      streak.value += 1
+      const basePoints = 15
+      const streakBonus = (streak.value - 1) * 2
+      const totalPoints = basePoints + streakBonus
+      
       status.value = 'correct'
-      message.value = 'Correct! +15 Rating points.'
-      updateRating(15)
+      message.value = streak.value > 1 ? `Correct! +${totalPoints} points (🔥 ${streak.value}x Streak Bonus).` : `Correct! +${basePoints} Rating points.`
+      updateRating(totalPoints)
       sessionStats.value.solved++
     } else {
-      // Only deduct points if it's the FIRST wrong move
+      streak.value = 0
       if (status.value !== 'wrong') {
         updateRating(-10)
         sessionStats.value.failed++
@@ -194,7 +206,6 @@
       
       status.value = 'wrong'
       
-      // Undo wrong move and show the correct one
       if (boardAPI.value) {
         boardAPI.value.setPosition(currentPuzzle.value.fen)
         const from = currentPuzzle.value.bestMove.slice(0, 2)
@@ -206,6 +217,7 @@
 
   function showSolution() {
     if (status.value === 'idle') {
+      streak.value = 0
       updateRating(-10)
       sessionStats.value.failed++
     }
@@ -243,6 +255,7 @@
           <div class="rating-badge">
             <span class="rating-label">Puzzle Rating</span>
             <span class="rating-value">🏆 {{ userRating }}</span>
+            <span v-if="streak > 1" class="streak-badge">🔥 {{ streak }} Streak</span>
           </div>
         </div>
 
@@ -275,12 +288,12 @@
               <p>{{ message }}</p>
             </div>
 
-            <div class="blunder-context" v-if="currentPuzzle">
+            <div class="blunder-context" v-if="currentPuzzle && !puzzlesExhausted">
               <span class="context-label">In your actual game, you played:</span>
               <span class="blunder-move">{{ blunderSan }}</span>
             </div>
 
-            <div class="puzzle-meta">
+            <div class="puzzle-meta" v-if="currentPuzzle && !puzzlesExhausted">
               <span class="meta-label">Side to move</span>
               <span class="meta-value">{{ currentPuzzle?.turn === 'white' ? 'White' : 'Black' }}</span>
             </div>
@@ -304,11 +317,18 @@
               <button v-if="status === 'idle'" class="action-btn hint-btn" @click="showSolution">
                 Show Solution (-10)
               </button>
-              <button v-else class="action-btn retry-btn" @click="retryPuzzle">
+              <button v-else-if="status === 'wrong'" class="action-btn retry-btn" @click="retryPuzzle">
                 Retry Puzzle
               </button>
-              <button class="action-btn next-btn" @click="loadRandomPuzzle">
-                Next Puzzle →
+              
+              <button 
+                class="action-btn next-btn" 
+                @click="loadRandomPuzzle" 
+                :disabled="puzzlesExhausted"
+                :class="{ disabled: puzzlesExhausted }"
+              >
+                <span v-if="puzzlesExhausted">All puzzles solved!</span>
+                <span v-else>Next Puzzle →</span>
               </button>
             </div>
           </div>
@@ -394,6 +414,7 @@
     padding: 0.75rem 1.25rem;
     border-radius: 12px;
     border: 1px solid var(--text-highlight);
+    gap: 0.25rem;
   }
 
   .rating-label {
@@ -408,6 +429,16 @@
     font-size: 1.4rem;
     font-weight: 700;
     color: var(--text-highlight);
+  }
+
+  .streak-badge {
+    background: rgba(255, 165, 0, 0.2);
+    color: #ffb74d;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 165, 0, 0.4);
   }
 
   .empty-state {
@@ -633,8 +664,14 @@
     background: var(--btn-active);
   }
 
-  .action-btn:hover {
+  .action-btn:hover:not(.disabled) {
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+
+  .action-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: #555 !important;
   }
 </style>
