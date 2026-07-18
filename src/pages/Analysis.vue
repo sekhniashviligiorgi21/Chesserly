@@ -521,7 +521,12 @@
 
   async function handleBothMoves(move) {
     const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
-    const sanMove = chess.move({ from: move.from, to: move.to, promotion: move.promotion ?? undefined })
+    let sanMove
+    try {
+      sanMove = chess.move({ from: move.from, to: move.to, promotion: move.promotion ?? undefined })
+    } catch (e) {
+      sanMove = null
+    }
     
     if (!sanMove) {
       boardAPI.value.setPosition(currentNode.value.fen)
@@ -562,7 +567,12 @@
     lastMoveAccuracy.value = null
     if (currentNode.value.children.length === 0) return
     const nextNode = currentNode.value.children[0]
-    const sanMove = chess.move(nextNode.uci)
+    let sanMove
+    try {
+      sanMove = chess.move(nextNode.uci)
+    } catch (e) {
+      sanMove = null
+    }
     if (sanMove) soundForLastMove(sanMove)
     movesListUCI.value.push(nextNode.uci)
     currentNode.value = nextNode
@@ -584,7 +594,13 @@
     }
 
     chess.reset()
-    for (const uci of uciMoves) chess.move(uci)
+    for (const uci of uciMoves) {
+      try {
+        chess.move(uci)
+      } catch (e) {
+        console.warn("Failed to apply UCI in jumpToNode", uci, e)
+      }
+    }
 
     movesListUCI.value = uciMoves
     currentNode.value = node
@@ -713,6 +729,13 @@
   }
 
   function formatEval(evalObj) {
+    // Check if we are at the end of a reviewed game with a known result
+    const isEndOfGameNode = currentNode.value.children.length === 0;
+    if (isEndOfGameNode && gameResult.value) {
+      return gameResult.value;
+    }
+    
+    // Check if the current local board state is game over
     if (chess.isGameOver()) {
       if (chess.isCheckmate()) {
         return chess.turn() === 'w' ? '0-1' : '1-0'
@@ -870,7 +893,12 @@
 
       undoMove()
 
-      const sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+      let sanMove
+      try {
+        sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+      } catch (e) {
+        sanMove = null
+      }
       if (!sanMove) return
 
       soundForLastMove(sanMove)
@@ -927,15 +955,21 @@
       let to = uci.slice(2, 4)
       const promotion = uci.length > 4 ? uci[4] : undefined
 
-      // Fallback for Chess960 castling notation that chess.js might reject directly
-      const castlingMap = {
-        'e1h1': 'e1g1', 'e1a1': 'e1c1', 'e8h8': 'e8g8', 'e8a8': 'e8c8'
+      // Map Chess960 castling targets to standard chess.js targets
+      const castlingFix = {
+          'e1h1': 'g1', 'e1a1': 'c1', 'e8h8': 'g8', 'e8a8': 'c8'
       };
+      
+      if (castlingFix[uci]) {
+          to = castlingFix[uci];
+      }
 
-      let sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
-      if (!sanMove && castlingMap[uci]) {
-          to = castlingMap[uci].slice(2, 4)
-          sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+      let sanMove;
+      try {
+          sanMove = chess.move({ from, to, promotion: promotion ?? undefined });
+      } catch (e) {
+          console.warn('Move execution failed for', uci, e);
+          return false;
       }
 
       if (!sanMove) return false
@@ -1242,7 +1276,10 @@
     let psPly = 1;
     while (psNode) {
       const uci = psNode.uci;
-      const moveObj = tempChess.move({ from: uci.substring(0, 2), to: uci.substring(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+      let moveObj;
+      try {
+        moveObj = tempChess.move({ from: uci.substring(0, 2), to: uci.substring(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+      } catch(e) { moveObj = null; }
       if (moveObj && moveObj.captured && psPly <= 12) earlyTrades++;
 
       if (psNode.analysisData?.eval && psNode.parent?.analysisData?.eval) {
@@ -2197,7 +2234,7 @@
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      font-size: clamp(0.8rem, 1.2vw, 1rem);
+      font-size: clamp(0.7rem, 1.2vw, 1rem);
       font-weight: 600;
       color: #fff8ef;
       text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
@@ -2207,6 +2244,9 @@
       backdrop-filter: blur(4px);
       z-index: 10;
       white-space: nowrap;
+      max-width: 90%;
+      overflow: hidden;
+      text-overflow: ellipsis;
   }
 
   .accuracydescribtion {
@@ -2265,10 +2305,13 @@
       background-color: #606847;
       border-radius: 10px;
       flex-shrink: 0;
-      width: 4.4rem;
+      min-width: 4.4rem;
+      width: auto;
+      padding: 0 0.5rem;
       text-align: center;
       white-space: nowrap;
-      padding: 0 0.2rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
   }
 
   .board-acc-icon {
