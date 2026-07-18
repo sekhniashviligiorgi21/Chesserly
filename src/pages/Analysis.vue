@@ -1314,28 +1314,28 @@
     }
     const pgnHash = generatePgnHash(pgn)
 
-      // Add this right above: const gamesRef = collection(...)
-  const extractedPuzzles = [];
-  let pNode = moveTree.children[0];
-  let pPly = 1;
-  
-  while (pNode) {
-    const side = pPly % 2 === 1 ? 'white' : 'black';
-    if (side === myColor) {
-      if (pNode.accuracy === 'blunder' || pNode.accuracy === 'mistake') {
-        if (pNode.parent && pNode.analysisData?.best_move) {
-          extractedPuzzles.push({
-            fen: pNode.parent.fen,        // Position BEFORE the blunder
-            bestMove: pNode.analysisData.best_move, // The correct move to play
-            playedMove: pNode.uci,        // The blunder they actually played
-            turn: side
-          });
+    const extractedPuzzles = [];
+    let pNode = moveTree.children[0];
+    let pPly = 1;
+    
+    while (pNode) {
+      const side = pPly % 2 === 1 ? 'white' : 'black';
+      if (side === myColor) {
+        if (pNode.accuracy === 'blunder' || pNode.accuracy === 'mistake') {
+          if (pNode.parent && pNode.analysisData?.best_move) {
+            extractedPuzzles.push({
+              fen: pNode.parent.fen,        
+              bestMove: pNode.analysisData.best_move, 
+              playedMove: pNode.uci,        // The blunder they actually played
+              turn: side,
+              eval: pNode.analysisData?.eval ? { type: pNode.analysisData.eval.type, value: pNode.analysisData.eval.value } : null // <--- ADD THIS LINE
+            });
+          }
         }
       }
+      pNode = pNode.children[0];
+      pPly++;
     }
-    pNode = pNode.children[0];
-    pPly++;
-  }
 
 
     const gamesRef = collection(db, `users/${currentUserId.value}/games`)

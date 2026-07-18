@@ -3,7 +3,7 @@
   import Title from '../assets/Title.vue'
   import { auth, db } from '../firebase'
   import { onAuthStateChanged } from 'firebase/auth'
-  import { collection, query, getDocs, doc, getDoc, setDoc } from 'firebase/firestore'
+  import { collection, query, getDocs, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore'
   import { Chess } from 'chess.js'
   import { TheChessboard } from 'vue3-chessboard'
   import 'vue3-chessboard/style.css'
@@ -28,12 +28,15 @@
   
   const userRating = ref(Number(localStorage.getItem('chesslab_puzzle_rating')) || 1200)
   const boardAPI = shallowRef(null)
-  const chess = new Chess()
   const isFlipped = ref(false)
 
   // Session Stats & Streaks
   const sessionStats = ref({ solved: 0, failed: 0 })
   const streak = ref(0)
+
+  // Eval Bar State
+  const evalHeight = ref(50)
+  const evalNumber = ref('0.0')
 
   onMounted(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -57,12 +60,13 @@
       const snap = await getDocs(q)
       let temp = []
       
-      snap.forEach(doc => {
-        const data = doc.data()
+      snap.forEach(docSnap => {
+        const data = docSnap.data()
         if (data.puzzles && Array.isArray(data.puzzles)) {
           data.puzzles.forEach((p, i) => {
-            if (p.fen && p.bestMove) {
-              temp.push({ ...p, id: `${doc.id}_${i}`, gameId: doc.id })
+            // Only fetch puzzles that have NOT been solved yet
+            if (p.fen && p.bestMove && !p.solved) {
+              temp.push({ ...p, id: `${docSnap.id}_${i}`, gameId: docSnap.id, indexInArray: i })
             }
           })
         }
@@ -77,7 +81,7 @@
         prepareQueue()
         loadRandomPuzzle()
       } else {
-        message.value = 'No puzzles generated yet. Analyze your games to find your blunders!'
+        message.value = 'No puzzles left! Analyze more games to generate new ones.'
       }
     } catch (e) {
       console.error("Failed to fetch puzzles:", e)
@@ -117,11 +121,29 @@
     }
   }
 
+  function updateEvalBar() {
+    if (!currentPuzzle.value || !currentPuzzle.value.eval) {
+      evalHeight.value = 50
+      evalNumber.value = '0.0'
+      return
+    }
+    const evalType = currentPuzzle.value.eval.type
+    const evalValue = currentPuzzle.value.eval.value
+    if (evalType === 'mate') {
+      if (evalValue >= 0) { evalHeight.value = 0; evalNumber.value = `M${evalValue}` }
+      else { evalHeight.value = 100; evalNumber.value = `M${evalValue}` }
+    } else {
+      const cp = Math.max(-800, Math.min(800, evalValue))
+      evalHeight.value = 50 - (cp / 800) * 50
+      evalNumber.value = (cp / 100).toFixed(2)
+    }
+  }
+
   function loadRandomPuzzle() {
     if (puzzleQueue.value.length === 0) {
       puzzlesExhausted.value = true
-      status.value = 'correct' // Hack to hide retry button and keep board green
-      message.value = "You've completed all puzzles! Great job."
+      status.value = 'correct' 
+      message.value = "No more puzzles left. Analyze more games to see more!"
       return
     }
 
@@ -129,12 +151,14 @@
     status.value = 'idle'
     message.value = `Find the best move for ${currentPuzzle.value.turn === 'white' ? 'White' : 'Black'}.`
     
-    // Calculate the SAN for the blunder move (checking multiple common property names)
-    const blunderUci = currentPuzzle.value.blunderMove || 
-                       currentPuzzle.value.userMove || 
-                       currentPuzzle.value.playedMove || 
-                       currentPuzzle.value.actualMove || 
-                       currentPuzzle.value.playerMove
+    // Reset Eval Bar to 50/50 while thinking
+    evalHeight.value = 50
+    evalNumber.value = '0.0'
+    
+    // Calculate the SAN for the blunder move
+    const blunderUci = currentPuzzle.value.playedMove || 
+                       currentPuzzle.value.blunderMove || 
+                       currentPuzzle.value.userMove
                        
     if (blunderUci) {
       try {
@@ -149,8 +173,6 @@
         blunderSan.value = blunderUci 
       }
     } else {
-      // Log the object so you can see what the actual property name is in your database
-      console.log("Could not find blunder move. Puzzle Object:", currentPuzzle.value)
       blunderSan.value = 'Unknown'
     }
     
@@ -179,7 +201,7 @@
     }
   }
 
-  function handleMove(move) {
+  async function handleMove(move) {
     if (status.value !== 'idle' || !currentPuzzle.value) return 
 
     const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
@@ -194,6 +216,22 @@
       message.value = streak.value > 1 ? `Correct! +${totalPoints} points (🔥 ${streak.value}x Streak Bonus).` : `Correct! +${basePoints} Rating points.`
       updateRating(totalPoints)
       sessionStats.value.solved++
+      
+      // Reveal eval bar
+      updateEvalBar()
+
+      // Mark puzzle as solved in Firestore so it doesn't appear after refresh
+      if (currentUser.value && currentPuzzle.value.gameId && currentPuzzle.value.indexInArray !== undefined) {
+        try {
+          const gameRef = doc(db, `users/${currentUser.value.uid}/games`, currentPuzzle.value.gameId)
+          await updateDoc(gameRef, {
+            [`puzzles.${currentPuzzle.value.indexInArray}.solved`]: true
+          })
+        } catch (e) {
+          console.error("Failed to mark puzzle as solved:", e)
+        }
+      }
+
     } else {
       streak.value = 0
       if (status.value !== 'wrong') {
@@ -205,6 +243,9 @@
       }
       
       status.value = 'wrong'
+      
+      // Reveal eval bar to show why the best move is good
+      updateEvalBar()
       
       if (boardAPI.value) {
         boardAPI.value.setPosition(currentPuzzle.value.fen)
@@ -224,6 +265,8 @@
     status.value = 'wrong'
     message.value = 'Better luck next time!'
     
+    updateEvalBar()
+    
     if (boardAPI.value && currentPuzzle.value) {
       boardAPI.value.setPosition(currentPuzzle.value.fen)
       const from = currentPuzzle.value.bestMove.slice(0, 2)
@@ -235,6 +278,8 @@
   function retryPuzzle() {
     status.value = 'idle'
     message.value = `Find the best move for ${currentPuzzle.value.turn === 'white' ? 'White' : 'Black'}.`
+    evalHeight.value = 50
+    evalNumber.value = '0.0'
     if (boardAPI.value) {
       boardAPI.value.hideMoves()
       boardAPI.value.setPosition(currentPuzzle.value.fen)
@@ -266,20 +311,31 @@
 
         <div v-else-if="!currentUser" class="empty-state"><p>Please log in to access your puzzles.</p></div>
         
-        <div v-else-if="allPuzzles.length === 0" class="empty-state">
-          <p>No puzzles generated yet.</p>
-          <p class="muted">Analyze your games to automatically generate puzzles from your blunders.</p>
+        <div v-else-if="allPuzzles.length === 0 && puzzlesExhausted" class="empty-state">
+          <p>No puzzles left!</p>
+          <p class="muted">Analyze more games to automatically generate new puzzles.</p>
         </div>
 
         <div v-else class="puzzle-interface">
           <div class="board-side">
-            <div class="board-wrapper">
-              <TheChessboard 
-                class="game-board"
-                @move="handleMove" 
-                @board-created="onBoardCreated" 
-                :board-config="{ coordinates: true, animation: { enabled: false } }" 
-              />
+            <div class="board-row">
+              <!-- Evaluation Bar -->
+              <div class="evalbar" v-if="currentPuzzle">
+                <div class="evalbar-inner">
+                  <div class="blackeval" :style="{ height: evalHeight + '%' }"></div>
+                  <div class="whiteeval" :style="{ height: (100 - evalHeight) + '%' }"></div>
+                </div>
+                <p class="evalnum">{{ evalNumber }}</p>
+              </div>
+
+              <div class="board-wrapper">
+                <TheChessboard 
+                  class="game-board"
+                  @move="handleMove" 
+                  @board-created="onBoardCreated" 
+                  :board-config="{ coordinates: true, animation: { enabled: false } }" 
+                />
+              </div>
             </div>
           </div>
           
@@ -489,10 +545,60 @@
     flex: 1 1 300px;
     min-width: 0;
     max-width: 600px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .board-row {
+    display: flex;
+    gap: 0.75rem;
+    width: 100%;
+  }
+
+  .evalbar {
+    width: clamp(24px, 4vw, 35px);
+    flex-shrink: 0;
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
+    background: #38412e;
+  }
+
+  .evalbar-inner {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+  }
+
+  .blackeval, .whiteeval {
+    width: 100%;
+    transition: height 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .blackeval { background-color: #38412e; }
+  .whiteeval { background-color: #626949; }
+
+  .evalnum {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: clamp(0.6rem, 1vw, 0.75rem);
+    font-weight: 600;
+    color: #fff8ef;
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.15rem 0.3rem;
+    border-radius: 4px;
+    backdrop-filter: blur(4px);
+    z-index: 10;
+    white-space: nowrap;
   }
 
   .board-wrapper {
-    width: 100%;
+    flex: 1;
     aspect-ratio: 1/1;
     border-radius: 8px;
     overflow: hidden;
