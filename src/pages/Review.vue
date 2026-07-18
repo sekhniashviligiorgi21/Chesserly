@@ -41,6 +41,11 @@
   const savedGames = ref([])
   const saveStatus = ref('')
 
+  // Generate month names for the nicer selector
+  const monthNames = Array.from({ length: 12 }, (_, i) => {
+    return new Date(2000, i, 1).toLocaleString('default', { month: 'long' })
+  })
+
   onMounted(() => {
     onAuthStateChanged(auth, (user) => {
       currentUser.value = user
@@ -186,7 +191,7 @@
     if (!res.ok) throw new Error('Failed to fetch from Lichess')
     const text = await res.text()
     if (!text.trim()) throw new Error('No games found for this player.')
-    return [normalizeLichessLine(text.trim().split('\n')[0])]
+    return [normalizeLichess(text.trim().split('\n')[0])]
   }
 
   function buildGameFromPgn(pgn) {
@@ -381,14 +386,19 @@
           <template v-if="importMode === 'range'">
             <label class="field field-small">
               <span class="field-label">Year</span>
-              <input v-model="year" placeholder="2026" class="input" @keyup.enter="chessImport" />
+              <input v-model="year" placeholder="2024" class="input" @keyup.enter="chessImport" />
             </label>
             <label class="field field-small">
               <span class="field-label">Month</span>
-              <select v-model="month" class="input">
-                <option value="month" disabled>Select</option>
-                <option v-for="m in 12" :key="m" :value="m">{{ String(m).padStart(2, '0') }}</option>
-              </select>
+              <div class="select-wrapper">
+                <select v-model="month" class="input select-input">
+                  <option value="month" disabled>Select Month</option>
+                  <option v-for="(name, i) in monthNames" :key="i" :value="i + 1">{{ name }}</option>
+                </select>
+                <svg class="dropdown-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </div>
             </label>
           </template>
           <button class="import-btn" @click="chessImport" :disabled="loading">
@@ -564,7 +574,45 @@
     width: 100%;
   }
 
-  .input:focus { outline: none; border-color: var(--text-highlight); box-shadow: 0 0 0 2px rgba(217, 179, 130, 0.2); }
+  .input:focus { 
+    outline: none; 
+    border-color: var(--text-highlight); 
+    box-shadow: 0 0 0 2px rgba(217, 179, 130, 0.2); 
+  }
+
+  /* --- Custom Select Dropdown Styles --- */
+  .select-wrapper {
+    position: relative;
+    width: 100%;
+  }
+
+  .select-input {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    padding-right: 2.5rem;
+    cursor: pointer;
+    width: 100%;
+  }
+
+  .select-wrapper .dropdown-arrow {
+    position: absolute;
+    right: 0.8rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    color: var(--text-highlight);
+    pointer-events: none;
+    transition: transform 0.2s ease;
+  }
+
+  /* Style the dropdown options panel natively */
+  .select-input option {
+    background-color: var(--bg-2);
+    color: #f4f0e3;
+    padding: 0.5rem;
+  }
 
   .import-btn {
     display: flex;
