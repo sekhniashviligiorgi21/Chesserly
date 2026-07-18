@@ -1188,9 +1188,7 @@
 
     if (uciList.length === 0) return
 
-    const myColor = pendingGameMeta.white.toLowerCase() !== 'white' 
-      ? (pendingGameMeta.white.toLowerCase() === 'black' ? 'black' : 'white') 
-      : 'black'
+    const myColor = pendingGameMeta.myColor === 'black' ? 'black' : 'white'
 
     const weights = { brilliant: 100, great: 100, best: 100, book: 100, excellent: 90, good: 80, inaccuracy: 20, mistake: 10, blunder: 0 }
     const myCounts = { brilliant: 0, great: 0, best: 0, book: 0, excellent: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 }

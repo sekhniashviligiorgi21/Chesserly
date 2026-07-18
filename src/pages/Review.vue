@@ -315,6 +315,12 @@
     }
 
     const moveString = gameUci.value.join('-')
+    
+    // Determine the user's actual color by matching usernames
+    const myUsername = (username.value || '').toLowerCase()
+    const whiteUsername = (selectedGame.value.white?.username || '').toLowerCase()
+    const myColor = whiteUsername === myUsername ? 'white' : 'black'
+
     router.push({
       path: '/',
       query: {
@@ -323,7 +329,8 @@
         black: selectedGame.value.black.username,
         whiteRating: selectedGame.value.white.rating,
         blackRating: selectedGame.value.black.rating,
-        pgn: selectedGame.value.pgn // <-- ADD THIS LINE
+        pgn: selectedGame.value.pgn,
+        myColor 
       }
     })
   }
