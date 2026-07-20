@@ -610,12 +610,6 @@
       return
     }
 
-    // BUG FIX: Strictly prevent any extra moves if the puzzle has been solved or failed.
-    if (status.value !== 'idle') {
-      boardAPI.value.setPosition(currentNode.value.fen)
-      return
-    }
-
     if (boardAPI.value) {
       boardAPI.value.hideMoves()
       updateBoardArrows()
@@ -652,8 +646,9 @@
 
     movesListUCI.value.push(uci)
     
-    // checkSolution = true ONLY if status is still 'idle'
-    await getAccuracy(status.value === 'idle')
+    // Only check the puzzle solution if the puzzle hasn't been completed yet ('idle')
+    const shouldCheckSolution = (status.value === 'idle')
+    await getAccuracy(shouldCheckSolution)
   }
 
   async function getAccuracy(checkSolution = false) {
