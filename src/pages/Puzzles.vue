@@ -554,10 +554,12 @@
     hintSquare.value = null
     activeTab.value = 'puzzle'
 
-    // Reset tree
+    // Reset tree entirely for new puzzle
     chess.load(currentPuzzle.value.fen)
     moveTree.fen = currentPuzzle.value.fen
     moveTree.children = []
+    moveTree.analysisData = null // Ensure stale cache isn't kept from the previous puzzle
+    moveTree.accuracy = null
     nodeIdCounter = 1
     for (const key in nodeMap) {
       if (parseInt(key) !== 0) delete nodeMap[key]
@@ -606,8 +608,10 @@
       return
     }
 
+    // Allow moves even if failed, but prevent moving if the puzzle is solved
     if (status.value === 'correct') {
       boardAPI.value.setPosition(currentNode.value.fen)
+      return
     }
 
     if (boardAPI.value) {
@@ -815,8 +819,6 @@
     if (!boardAPI.value) return
     const shapes = []
 
-    // Played-move arrow removed; it's now shown as text in the sidebar.
-
     if (status.value !== 'idle' && bestArrowSquares.value) {
       shapes.push({ orig: bestArrowSquares.value.from, dest: bestArrowSquares.value.to, brush: 'green' })
     }
@@ -827,6 +829,7 @@
   function uciLine() {
     sanLine.value = []
     bestArrowSquares.value = null
+    if (!moveData.value?.best_line) return
     let lineNum = 0
     greedyChess.load(chess.fen())
     for (let i = 0; i < 30; i++) {
