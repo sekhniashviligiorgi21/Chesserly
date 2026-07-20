@@ -29,8 +29,10 @@
   const message = ref('Find the best move.')
   const activeTab = ref('puzzle')
 
-  // Computed visibility for Analysis tab
-  const canViewAnalysis = computed(() => status.value === 'correct' || solutionShown.value || status.value === 'wrong')
+  // Analysis (eval bar, engine lines, move tree navigation) only unlocks once the
+  // puzzle has actually been solved or the solution has been revealed - getting it
+  // wrong on its own should not open it up.
+  const canViewAnalysis = computed(() => status.value === 'correct' || solutionShown.value)
 
   // --- Hint System ---
   const hintShown = ref(false)
@@ -471,6 +473,7 @@
       }
       boardAPI.value.setPosition(currentPuzzle.value.fen)
       boardAPI.value.hideMoves()
+      updateBoardArrows()
     }
 
     getAccuracy()
@@ -487,6 +490,7 @@
           isFlipped.value = shouldBeFlipped
         }
         boardAPI.value.setPosition(currentPuzzle.value.fen)
+        updateBoardArrows()
       })
     }
   }
@@ -503,7 +507,10 @@
       return
     }
 
-    if (boardAPI.value) boardAPI.value.hideMoves()
+    if (boardAPI.value) {
+      boardAPI.value.hideMoves()
+      updateBoardArrows()
+    }
     hintSquare.value = null // Clear hint highlight on move
 
     const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
@@ -561,7 +568,7 @@
       uciSecondLine()
       uciThirdLine()
       uciLine()
-      drawBestArrow()
+      updateBoardArrows()
       
       if (checkSolution) checkPuzzleSolution()
       return
@@ -579,12 +586,15 @@
       uciSecondLine()
       uciThirdLine()
       uciLine()
-      drawBestArrow()
+      updateBoardArrows()
     }
 
     isAnalyzing.value = true
     bestArrowSquares.value = null
-    if (boardAPI.value) boardAPI.value.hideMoves()
+    if (boardAPI.value) {
+      boardAPI.value.hideMoves()
+      updateBoardArrows()
+    }
 
     const beforeFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
     const afterFen = currentNode.value.fen
@@ -609,7 +619,7 @@
         uciLine()
         uciSecondLine()
         uciThirdLine()
-        drawBestArrow()
+        updateBoardArrows()
 
         treeVersion.value++
 
@@ -718,10 +728,23 @@
     activeTab.value = 'analysis'
   }
 
-  function drawBestArrow() {
-    if (!boardAPI.value || !bestArrowSquares.value) return
-    if (status.value === 'idle') return 
-    boardAPI.value.drawMove(bestArrowSquares.value.from, bestArrowSquares.value.to, 'green')
+  // Draws the persistent "you played" arrow (blue) plus, once the puzzle has been
+  // solved or the solution shown, the engine's recommended arrow (green) - both at
+  // once via setShapes so neither call clobbers the other.
+  function updateBoardArrows() {
+    if (!boardAPI.value) return
+    const shapes = []
+
+    if (currentPuzzle.value?.playedMove) {
+      const uci = currentPuzzle.value.playedMove
+      shapes.push({ orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush: 'blue' })
+    }
+
+    if (status.value !== 'idle' && bestArrowSquares.value) {
+      shapes.push({ orig: bestArrowSquares.value.from, dest: bestArrowSquares.value.to, brush: 'green' })
+    }
+
+    boardAPI.value.setShapes(shapes)
   }
 
   function uciLine() {
@@ -825,6 +848,8 @@
     return prettyMove(bestMoveSan.value) + " was the best"
   }
 
+  // Full-square overlay (used only for the hint highlight circle, which needs to
+  // be centered in the square rather than pinned to a corner).
   function squareStyle(square) {
     if (!square) return {}
     const file = square.charCodeAt(0) - 97
@@ -844,6 +869,23 @@
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center'
+    }
+  }
+
+  // Small corner-badge positioning for the move-classification icon, matching
+  // the sizing/placement used in Analysis.vue.
+  function accuracyIconStyle(square) {
+    if (!square) return {}
+    const file = square.charCodeAt(0) - 97
+    const rank = parseInt(square[1]) - 1
+    const flipped = isFlipped.value
+    const col = flipped ? 7 - file : file
+    const row = flipped ? rank : 7 - rank
+    return {
+      position: 'absolute',
+      left: `${(col + 1) * 12.5}%`,
+      top: `${row * 12.5}%`,
+      transform: 'translate(-70%, -35%)',
     }
   }
 </script>
@@ -905,13 +947,13 @@
                 :board-config="{ coordinates: true, animation: { enabled: false } }"
               />
               
-              <!-- Move Classification Icon Wrapper -->
-              <div
+              <!-- Move Classification Icon -->
+              <img
                 v-if="lastMoveSquare && lastMoveAccuracy && canViewAnalysis"
-                :style="squareStyle(lastMoveSquare)"
-              >
-                <img :src="accuracySymbol(lastMoveAccuracy)" class="board-acc-icon" />
-              </div>
+                :src="accuracySymbol(lastMoveAccuracy)"
+                class="board-acc-icon"
+                :style="accuracyIconStyle(lastMoveSquare)"
+              />
               
               <!-- Hint Highlight Circle -->
               <div v-if="hintSquare" :style="squareStyle(hintSquare)" class="hint-overlay">
@@ -955,12 +997,6 @@
 
         <!-- Puzzle Tab Content -->
         <div v-show="activeTab === 'puzzle'" class="puzzle-tab-content">
-          <div class="puzzle-header">
-            <span class="player-color-dot" :class="currentPuzzle?.turn"></span>
-            <span class="player-name">{{ currentPuzzle?.turn === 'white' ? 'White to Play' : 'Black to Play' }}</span>
-            <div class="streak-badge" v-if="streak > 1">🔥 {{ streak }}</div>
-          </div>
-
           <div class="rating-block">
             <span class="rating-label">Rating</span>
             <div class="rating-row">
@@ -976,7 +1012,10 @@
                 </span>
               </Transition>
             </div>
-            <span class="puzzles-remaining">{{ puzzleQueue.length }} puzzles remaining</span>
+            <div class="rating-meta">
+              <span class="puzzles-remaining">{{ puzzleQueue.length }} left</span>
+              <span class="streak-badge" v-if="streak > 1">🔥 {{ streak }}</span>
+            </div>
           </div>
 
           <div class="chat-bubble" :class="status">
@@ -1004,7 +1043,7 @@
           </div>
           
           <div class="bottom-row">
-            <p class="kbd-hint">Space: Next &nbsp;·&nbsp; H: Hint &nbsp;·&nbsp; S: Solution &nbsp;·&nbsp; Arrows: Navigate</p>
+            <p class="kbd-hint">Space: Next &nbsp;·&nbsp; H: Hint &nbsp;·&nbsp; S: Solution</p>
             <button class="icon-btn-sound" @click="soundOn = !soundOn">
               {{ soundOn ? '🔊' : '🔇' }}
             </button>
@@ -1221,17 +1260,11 @@
     cursor: not-allowed; opacity: 0.3;
   }
 
-  .puzzle-tab-content, .analysis-tab-content {
+  .puzzle-tab-content {
+    display: flex; flex-direction: column; padding: 1.25rem 1.5rem; gap: 1.1rem; flex: 1;
+  }
+  .analysis-tab-content {
     display: flex; flex-direction: column; padding: 1.5rem; gap: 1.5rem; flex: 1;
-  }
-
-  .puzzle-header {
-    display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: #f4f0e3;
-    font-size: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.05);
-  }
-  .streak-badge {
-    margin-left: auto; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 700; color: #ffb74d;
-    background: rgba(255, 165, 0, 0.15); border: 1px solid rgba(255, 165, 0, 0.3); border-radius: 6px;
   }
 
   .rating-block {
@@ -1259,8 +1292,15 @@
     75%  { opacity: 1; transform: translateY(-10px); }
     100% { opacity: 0; transform: translateY(-16px); }
   }
+  .rating-meta {
+    display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+  }
   .puzzles-remaining {
     font-size: 0.75rem; color: rgba(244, 240, 227, 0.4); font-weight: 500;
+  }
+  .streak-badge {
+    padding: 0.2rem 0.55rem; font-size: 0.72rem; font-weight: 700; color: #ffb74d;
+    background: rgba(255, 165, 0, 0.15); border: 1px solid rgba(255, 165, 0, 0.3); border-radius: 6px;
   }
 
   .chat-bubble {
@@ -1420,10 +1460,11 @@
 
   /* --- Board Overlays --- */
   .board-acc-icon {
-    width: 70%; 
-    height: 70%; 
-    border-radius: 50%; 
-    pointer-events: none; 
+    position: absolute;
+    width: 4.5%;
+    height: 4.5%;
+    border-radius: 50%;
+    pointer-events: none;
     z-index: 20;
   }
 
