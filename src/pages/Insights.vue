@@ -142,9 +142,9 @@
   // --- Game Length Survival Curves ---
   const gameLengthStats = computed(() => {
     const buckets = {
-      short: { label: 'Short (<20)', games: 0, win: 0, accs: [], blunders: 0 },
-      medium: { label: 'Medium (20-40)', games: 0, win: 0, accs: [], blunders: 0 },
-      long: { label: 'Long (40+)', games: 0, win: 0, accs: [], blunders: 0 }
+      short: { label: 'Short (<20)', games: 0, win: 0, loss: 0, draw: 0, accs: [], blunders: 0 },
+      medium: { label: 'Medium (20-40)', games: 0, win: 0, loss: 0, draw: 0, accs: [], blunders: 0 },
+      long: { label: 'Long (40+)', games: 0, win: 0, loss: 0, draw: 0, accs: [], blunders: 0 }
     }
     insights.value.forEach(g => {
       const moves = g.insights?.totalMoves || 0
@@ -156,10 +156,11 @@
       buckets[bucket].blunders += (g.insights.moveCounts?.blunder || 0) + (g.insights.moveCounts?.mistake || 0)
       const myRes = c === 'white' ? g.white?.result : g.black?.result
       if (myRes === 'win') buckets[bucket].win++
+      else if (['lose', 'checkmated', 'resigned', 'abandoned'].includes(myRes)) buckets[bucket].loss++
+      else buckets[bucket].draw++
     })
     return Object.values(buckets).map(b => ({
       ...b,
-      winRate: b.games > 0 ? ((b.win / b.games) * 100).toFixed(0) : 0,
       avgAcc: b.accs.length ? (b.accs.reduce((a,b) => a+b, 0) / b.accs.length).toFixed(1) : null
     }))
   })
@@ -236,6 +237,56 @@
     })
   })
 
+  // --- Playstyle Note Generator ---
+  const playstyleNote = computed(() => {
+    if (!playstyleData.value) return null
+    const sorted = [...playstyleData.value].sort((a, b) => b.value - a.value)
+    const top = sorted[0]
+    const second = sorted[1]
+
+    const notes = {
+      Trader: {
+        title: 'The Simplifier',
+        body: (v) => `You regularly exchange pieces early — on average you make ${Math.round(v/25 * 4)} early trades per game. This patience-first approach reduces tactical risk and steers games toward positions you understand, but against lower-rated opponents it can also dissipate winning chances. Consider keeping more tension on the board when you're the favorite.`
+      },
+      Tactician: {
+        title: 'The Calculator',
+        body: (v) => `Your games feature sharp evaluation swings and a healthy rate of brilliant moves — your score of ${v.toFixed(0)} reflects a player who thrives in complexity. You're at your best when the position demands concrete calculation rather than quiet maneuvering. Be mindful that this same appetite for complications can backfire in time trouble.`
+      },
+      Aggressive: {
+        title: 'The Initiator',
+        body: (v) => `You push for the initiative — your moves frequently change the evaluation bar and create problems for your opponent. With a score of ${v.toFixed(0)}, you rarely play a "quiet" game. The flip side is that aggressive play demands accurate calculation; when the attack doesn't quite land, you can be left overextended.`
+      },
+      Defensive: {
+        title: 'The Solid Builder',
+        body: (v) => `Your opening accuracy of ${v.toFixed(0)}% is notably high — you navigate the first phase of the game confidently and rarely stray into trouble early. This solidity gives you a reliable foundation, but be careful not to drift into passivity: sound openings still need to be followed up with active middlegame plans.`
+      },
+      Endgame: {
+        title: 'The Technician',
+        body: (v) => `You convert endgames with precision (${v.toFixed(0)}% accuracy), suggesting strong technical understanding when the board simplifies. Many players collapse once the pieces come off — you don't. To leverage this further, aim to steer slightly worse positions toward endgames where your technique can save half-points others would drop.`
+      }
+    }
+
+    const t = notes[top.axis]
+    return {
+      title: t.title,
+      trait: top.axis,
+      body: t.body(top.value),
+      secondary: top.value - second.value < 15
+        ? `You also show strong ${second.axis.toLowerCase()} tendencies.`
+        : null
+    }
+  })
+
+  // --- Playstyle Calculation Explanations ---
+  const playstyleFormulas = [
+    { axis: 'Trader',     formula: 'Average early captures (first 12 plies) per game, scaled so 4 trades = 100.' },
+    { axis: 'Tactician',  formula: 'Average evaluation swings (>100 cp shifts) and brilliant moves per game, combined and scaled.' },
+    { axis: 'Aggressive', formula: 'Combination of brilliant moves and evaluation swings per game — measures how often you force the position to change character.' },
+    { axis: 'Defensive',  formula: 'Directly your average opening-phase accuracy percentage.' },
+    { axis: 'Endgame',    formula: 'Directly your average endgame-phase accuracy percentage.' }
+  ]
+
   const RECENT_WINDOW = 5
   const trend = computed(() => {
     const withAcc = insights.value.filter(g => g.insights?.overallAccuracy !== null)
@@ -278,6 +329,19 @@
       }
     })
     return totals
+  })
+
+  const moveCountsWithAvg = computed(() => {
+    const totals = { brilliant: 0, great: 0, best: 0, book: 0, excellent: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 }
+    insights.value.forEach(g => {
+      if (g.insights?.moveCounts) {
+        for (const key in totals) totals[key] += g.insights.moveCounts[key] || 0
+      }
+    })
+    const games = totalGames.value || 1
+    return Object.fromEntries(
+      Object.entries(totals).map(([k, v]) => [k, { total: v, avg: v / games }])
+    )
   })
 
   const moveCountsTotal = computed(() => Object.values(moveCounts.value).reduce((a, b) => a + b, 0))
@@ -396,14 +460,14 @@
         <div v-else class="dashboard-layout">
           <div class="tab-nav-wrapper">
             <div class="tab-nav">
-              <button class="tab-btn" :class="{ active: activeTab === 'overview' }" @click="setTab('overview')">Overview</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'playstyle' }" @click="setTab('playstyle')">Playstyle</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'stamina' }" @click="setTab('stamina')">Stamina</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'colors' }" @click="setTab('colors')">Colors</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'pieces' }" @click="setTab('pieces')">Pieces</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'openings' }" @click="setTab('openings')">Openings</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'heatmap' }" @click="setTab('heatmap')">Heatmap</button>
-              <button class="tab-btn" :class="{ active: activeTab === 'moves' }" @click="setTab('moves')">Move Classes</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'overview' }"  @click="setTab('overview')">1. Overview</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'moves' }"     @click="setTab('moves')">2. Move Classes</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'colors' }"    @click="setTab('colors')">3. Colors</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'pieces' }"    @click="setTab('pieces')">4. Pieces</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'openings' }"  @click="setTab('openings')">5. Openings</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'stamina' }"   @click="setTab('stamina')">6. Stamina</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'playstyle' }" @click="setTab('playstyle')">7. Playstyle</button>
+              <button class="tab-btn" :class="{ active: activeTab === 'heatmap' }"   @click="setTab('heatmap')">8. Heatmap</button>
             </div>
           </div>
 
@@ -459,51 +523,25 @@
                 </div>
               </template>
 
-              <!-- PLAYSTYLE TAB -->
-              <template v-if="activeTab === 'playstyle'">
-                <div class="playstyle-panel" v-if="playstyleData">
-                  <div class="radar-container">
-                    <svg viewBox="0 0 200 200" class="radar-svg">
-                      <polygon v-for="(points, i) in radarGrid" :key="i" :points="points" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1" />
-                      <polygon v-if="radarPoints" :points="radarPoints" fill="rgba(106, 209, 63, 0.2)" stroke="#6ad13f" stroke-width="2" />
-                      <text v-for="label in radarLabels" :key="label.label" :x="label.x" :y="label.y" text-anchor="middle" dominant-baseline="middle" class="radar-label">{{ label.label }}</text>
-                    </svg>
+              <!-- MOVE CLASSES TAB -->
+              <template v-if="activeTab === 'moves'">
+                <div class="move-bar-container" v-if="moveCountsBarSegments.length">
+                  <div class="move-bar">
+                    <div v-for="seg in moveCountsBarSegments" :key="seg.key" class="move-bar-segment" :style="{ width: seg.percent + '%', background: seg.meta.color }" :title="`${seg.meta.label}: ${seg.count} (${seg.percent.toFixed(1)}%)`"></div>
                   </div>
-                  <div class="playstyle-traits">
-                    <div v-for="d in playstyleData" :key="d.axis" class="trait-row">
-                      <span class="trait-name">{{ d.axis }}</span>
-                      <div class="trait-bar-container">
-                        <div class="trait-bar" :style="{ width: d.value + '%' }"></div>
-                      </div>
-                      <span class="trait-val">{{ d.value.toFixed(0) }}</span>
-                    </div>
+                  <div class="move-bar-caption">
+                    <span>Total moves: <strong>{{ moveCountsTotal }}</strong></span>
+                    <span>Across <strong>{{ totalGames }}</strong> games</span>
                   </div>
                 </div>
-                <div v-else class="panel-empty">
-                  <p>Not enough data to generate a playstyle profile yet. Analyze a few more games!</p>
-                </div>
-              </template>
-
-              <!-- STAMINA TAB -->
-              <template v-if="activeTab === 'stamina'">
-                <div class="stamina-grid">
-                  <div v-for="bucket in gameLengthStats" :key="bucket.label" class="stamina-card">
-                    <h3 class="stamina-title">{{ bucket.label }}</h3>
-                    <span class="stamina-games">{{ bucket.games }} Games</span>
-                    <div class="stamina-stat">
-                      <span class="stat-label">Win Rate</span>
-                      <span class="stamina-val">{{ bucket.winRate }}%</span>
-                    </div>
-                    <div class="stamina-bar-container">
-                      <div class="stamina-bar win" :style="{ width: bucket.winRate + '%' }"></div>
-                    </div>
-                    <div class="stamina-stat">
-                      <span class="stat-label">Avg Accuracy</span>
-                      <span class="stamina-val" :style="{color: bucket.avgAcc ? getAccuracyMeta(parseFloat(bucket.avgAcc)).color : '#fff'}">{{ bucket.avgAcc ? bucket.avgAcc + '%' : '—' }}</span>
-                    </div>
-                    <div class="stamina-stat">
-                      <span class="stat-label">Blunders</span>
-                      <span class="stamina-val" style="color: #ff8a80;">{{ bucket.blunders }}</span>
+                <div class="move-classes-grid">
+                  <div v-for="(meta, key) in classificationMeta" :key="key" class="move-class-box">
+                    <img :src="meta.icon" class="mc-icon-img" :alt="meta.label" />
+                    <span class="mc-label" :style="{ color: meta.color }">{{ meta.label }}</span>
+                    <div class="mc-numbers">
+                      <span class="mc-count">{{ moveCountsWithAvg[key].total }}</span>
+                      <span class="mc-percent" v-if="moveCountsTotal">{{ ((moveCounts[key] / moveCountsTotal) * 100).toFixed(1) }}% of moves</span>
+                      <span class="mc-avg">{{ moveCountsWithAvg[key].avg.toFixed(2) }} / game</span>
                     </div>
                   </div>
                 </div>
@@ -619,6 +657,83 @@
                 </div>
               </template>
 
+              <!-- STAMINA TAB -->
+              <template v-if="activeTab === 'stamina'">
+                <div class="stamina-grid">
+                  <div v-for="bucket in gameLengthStats" :key="bucket.label" class="stamina-card">
+                    <h3 class="stamina-title">{{ bucket.label }}</h3>
+                    <span class="stamina-games">{{ bucket.games }} Games</span>
+
+                    <div class="wld-bar stamina-wld">
+                      <div class="wld-segment win"  :style="{ width: (bucket.games > 0 ? (bucket.win  / bucket.games) * 100 : 0) + '%' }" :title="`Wins: ${bucket.win}`"></div>
+                      <div class="wld-segment draw" :style="{ width: (bucket.games > 0 ? (bucket.draw / bucket.games) * 100 : 0) + '%' }" :title="`Draws: ${bucket.draw}`"></div>
+                      <div class="wld-segment loss" :style="{ width: (bucket.games > 0 ? (bucket.loss / bucket.games) * 100 : 0) + '%' }" :title="`Losses: ${bucket.loss}`"></div>
+                    </div>
+                    <div class="wld-legend">
+                      <span><span class="dot win"></span> {{ bucket.win }}</span>
+                      <span><span class="dot draw"></span> {{ bucket.draw }}</span>
+                      <span><span class="dot loss"></span> {{ bucket.loss }}</span>
+                    </div>
+
+                    <div class="stamina-stat">
+                      <span class="stat-label">Avg Accuracy</span>
+                      <span class="stamina-val" :style="{color: bucket.avgAcc ? getAccuracyMeta(parseFloat(bucket.avgAcc)).color : '#fff'}">{{ bucket.avgAcc ? bucket.avgAcc + '%' : '—' }}</span>
+                    </div>
+                    <div class="stamina-stat">
+                      <span class="stat-label">Blunders</span>
+                      <span class="stamina-val" style="color: #ff8a80;">{{ bucket.blunders }}</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- PLAYSTYLE TAB -->
+              <template v-if="activeTab === 'playstyle'">
+                <div class="playstyle-panel" v-if="playstyleData">
+                  <div class="radar-container">
+                    <svg viewBox="0 0 200 200" class="radar-svg">
+                      <polygon v-for="(points, i) in radarGrid" :key="i" :points="points" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1" />
+                      <polygon v-if="radarPoints" :points="radarPoints" fill="rgba(106, 209, 63, 0.2)" stroke="#6ad13f" stroke-width="2" />
+                      <text v-for="label in radarLabels" :key="label.label" :x="label.x" :y="label.y" text-anchor="middle" dominant-baseline="middle" class="radar-label">{{ label.label }}</text>
+                    </svg>
+                  </div>
+                  <div class="playstyle-traits">
+                    <div v-for="d in playstyleData" :key="d.axis" class="trait-row">
+                      <span class="trait-name">{{ d.axis }}</span>
+                      <div class="trait-bar-container">
+                        <div class="trait-bar" :style="{ width: d.value + '%' }"></div>
+                      </div>
+                      <span class="trait-val">{{ d.value.toFixed(0) }}</span>
+                    </div>
+                  </div>
+
+                  <div class="playstyle-note" v-if="playstyleNote">
+                    <div class="playstyle-note-header">
+                      <span class="playstyle-archetype">{{ playstyleNote.title }}</span>
+                      <span class="playstyle-trait-tag">Strongest trait: {{ playstyleNote.trait }}</span>
+                    </div>
+                    <p class="playstyle-note-body">{{ playstyleNote.body }}</p>
+                    <p class="playstyle-note-secondary" v-if="playstyleNote.secondary">{{ playstyleNote.secondary }}</p>
+                  </div>
+
+                  <div class="playstyle-formulas">
+                    <h4 class="formulas-title">How each trait is calculated</h4>
+                    <div v-for="f in playstyleFormulas" :key="f.axis" class="formula-row">
+                      <span class="formula-axis">{{ f.axis }}</span>
+                      <span class="formula-text">{{ f.formula }}</span>
+                    </div>
+                    <p class="formulas-disclaimer">
+                      Note: each axis is normalized independently on a 0–100 intensity scale, so the values
+                      intentionally do <strong>not</strong> sum to 100. They describe how strongly you exhibit
+                      each individual trait, not a percentage distribution.
+                    </p>
+                  </div>
+                </div>
+                <div v-else class="panel-empty">
+                  <p>Not enough data to generate a playstyle profile yet. Analyze a few more games!</p>
+                </div>
+              </template>
+
               <!-- HEATMAP TAB -->
               <template v-if="activeTab === 'heatmap'">
                 <div class="heatmap-panel">
@@ -697,23 +812,6 @@
                     <template v-else>Tap a square to see its exact count.</template>
                   </p>
                   <p class="heatmap-info">Left board shows where you blunder. Right board shows where you play accurately.</p>
-                </div>
-              </template>
-
-              <!-- MOVE CLASSES TAB -->
-              <template v-if="activeTab === 'moves'">
-                <div class="move-bar-container" v-if="moveCountsBarSegments.length">
-                  <div class="move-bar">
-                    <div v-for="seg in moveCountsBarSegments" :key="seg.key" class="move-bar-segment" :style="{ width: seg.percent + '%', background: seg.meta.color }" :title="`${seg.meta.label}: ${seg.count} (${seg.percent.toFixed(1)}%)`"></div>
-                  </div>
-                </div>
-                <div class="move-classes-grid">
-                  <div v-for="(meta, key) in classificationMeta" :key="key" class="move-class-box">
-                    <img :src="meta.icon" class="mc-icon-img" :alt="meta.label" />
-                    <span class="mc-label" :style="{ color: meta.color }">{{ meta.label }}</span>
-                    <span class="mc-count">{{ moveCounts[key] }}</span>
-                    <span class="mc-percent" v-if="moveCountsTotal">{{ ((moveCounts[key] / moveCountsTotal) * 100).toFixed(1) }}%</span>
-                  </div>
                 </div>
               </template>
             </div>
@@ -1097,6 +1195,16 @@
     gap: 2rem;
     justify-content: center;
     align-items: center;
+    flex-direction: column;
+  }
+
+  @media (min-width: 768px) {
+    .playstyle-panel {
+      flex-direction: row;
+    }
+    .radar-container { flex: 0 0 300px; }
+    .playstyle-traits { flex: 1; min-width: 250px; }
+    .playstyle-note, .playstyle-formulas { flex-basis: 100%; }
   }
 
   .radar-container {
@@ -1162,6 +1270,99 @@
     text-align: right;
   }
 
+  /* Playstyle note */
+  .playstyle-note {
+    width: 100%;
+    background: linear-gradient(135deg, rgba(106, 209, 63, 0.08), rgba(217, 179, 130, 0.05));
+    border: 1px solid rgba(217, 179, 130, 0.25);
+    border-radius: 14px;
+    padding: 1.25rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .playstyle-note-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .playstyle-archetype {
+    font-family: serif;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-highlight, #d9b382);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .playstyle-trait-tag {
+    font-size: 0.75rem;
+    color: rgba(244, 240, 227, 0.7);
+    background: rgba(0, 0, 0, 0.25);
+    padding: 0.25rem 0.6rem;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .playstyle-note-body {
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: rgba(244, 240, 227, 0.88);
+  }
+  .playstyle-note-secondary {
+    margin: 0;
+    font-size: 0.82rem;
+    font-style: italic;
+    color: rgba(244, 240, 227, 0.6);
+  }
+
+  /* Playstyle formulas */
+  .playstyle-formulas {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .formulas-title {
+    font-family: serif;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #f5f5dc;
+    margin: 0 0 0.3rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .formula-row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+    align-items: baseline;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .formula-row:last-of-type { border-bottom: none; }
+  .formula-axis {
+    font-weight: 700;
+    color: var(--text-highlight, #d9b382);
+  }
+  .formula-text {
+    color: rgba(244, 240, 227, 0.7);
+    line-height: 1.4;
+  }
+  .formulas-disclaimer {
+    margin: 0.5rem 0 0;
+    font-size: 0.78rem;
+    color: rgba(244, 240, 227, 0.55);
+    line-height: 1.5;
+    font-style: italic;
+  }
+  .formulas-disclaimer strong { color: #f4f0e3; font-style: normal; }
+
   /* Stamina Tab */
   .stamina-grid {
     display: grid;
@@ -1207,19 +1408,7 @@
     color: #f5f5dc;
   }
 
-  .stamina-bar-container {
-    height: 8px;
-    background: rgba(0, 0, 0, 0.3);
-    border-radius: 4px;
-    overflow: hidden;
-    margin-top: -0.5rem;
-  }
-
-  .stamina-bar.win {
-    height: 100%;
-    background: #8fd97a;
-    border-radius: 4px;
-  }
+  .stamina-wld { margin-top: 0.5rem; }
 
   /* Colors Tab */
   .colors-grid {
@@ -1728,6 +1917,16 @@
     transition: width 0.5s ease;
   }
 
+  .move-bar-caption {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    color: rgba(244, 240, 227, 0.6);
+    margin-top: 0.6rem;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .move-bar-caption strong { color: #f4f0e3; }
+
   .move-classes-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1759,6 +1958,14 @@
     font-weight: 600;
   }
 
+  .mc-numbers {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.15rem;
+    margin-top: 0.2rem;
+  }
+
   .mc-count {
     font-family: "JetBrains Mono", monospace;
     font-size: 1.5rem;
@@ -1771,6 +1978,13 @@
     font-family: "JetBrains Mono", monospace;
     font-size: 0.72rem;
     color: rgba(244, 240, 227, 0.5);
+  }
+
+  .mc-avg {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.72rem;
+    color: var(--text-highlight, #d9b382);
+    font-weight: 600;
   }
 
   @media (max-width: 600px) {
