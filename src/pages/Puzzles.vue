@@ -606,10 +606,8 @@
       return
     }
 
-    // Allow moves even if failed, but prevent moving if the puzzle is solved
     if (status.value === 'correct') {
       boardAPI.value.setPosition(currentNode.value.fen)
-      return
     }
 
     if (boardAPI.value) {
