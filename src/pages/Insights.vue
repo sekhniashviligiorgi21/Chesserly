@@ -1,3 +1,6 @@
+Here is the full updated code. I have removed the text truncation properties (`overflow: hidden`, `text-overflow: ellipsis`, and `white-space: nowrap`) from the `.opening-name` class and added `word-break: break-word` so that the opening names will wrap and display fully on all screen sizes.
+
+```vue
 <script setup>
   import { ref, computed, onMounted, watch } from 'vue'
   import Title from '../assets/Title.vue'
@@ -1661,15 +1664,14 @@
     font-weight: 600;
     color: #f5f5dc;
     font-size: 0.95rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    word-break: break-word; /* Forces text to wrap properly on all devices */
   }
 
   .opening-games {
     font-family: "JetBrains Mono", monospace;
     color: rgba(244, 240, 227, 0.5);
     font-size: 0.85rem;
+    white-space: nowrap;
   }
 
   .opening-acc-container {
@@ -1679,6 +1681,7 @@
     background: rgba(255, 255, 255, 0.05);
     padding: 0.3rem 0.6rem;
     border-radius: 8px;
+    flex-shrink: 0;
   }
 
   .opening-acc-icon {
@@ -2001,6 +2004,22 @@
       justify-content: space-between;
       gap: 1rem;
     }
+    .opening-row {
+      flex-wrap: wrap;
+    }
+    .opening-name {
+      width: 100%;
+      flex: 1 1 100%;
+      order: 2;
+      margin-top: 0.5rem;
+    }
+    .opening-games {
+      order: 3;
+      margin-left: auto;
+    }
+    .opening-acc-container {
+      order: 4;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -2012,3 +2031,4 @@
     }
   }
 </style>
+```
