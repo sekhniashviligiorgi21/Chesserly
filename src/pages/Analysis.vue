@@ -200,7 +200,7 @@ async function importLichessExplorer() {
     return
   }
 
-  const bookList = uciList.join(", ")
+  const bookList = uciList.join(",")
   const dbParam = explorerDb.value
   const url = bookList
     ? `../../api/explorer?db=${dbParam}&play=${encodeURIComponent(bookList)}`
