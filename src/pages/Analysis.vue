@@ -95,6 +95,7 @@
   const toastMessage = ref('')
   const activeTab = ref('moves')
   const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
+  const shareMenuOpen = ref(false)
 
   const whiteName = ref('White')
   const blackName = ref('Black')
@@ -407,7 +408,7 @@
       nodeId
     }
   }
-  function closeContextMenu() { contextMenu.value.visible = false }
+  function closeContextMenu() { contextMenu.value.visible = false; shareMenuOpen.value = false }
   function openContextMenu(event, nodeId) { showContextMenu(event.clientX, event.clientY, nodeId) }
   function handleDeleteFromMenu() {
     if (contextMenu.value.nodeId !== null) deleteMove(contextMenu.value.nodeId)
@@ -426,6 +427,11 @@
   function handleCellClick(nodeId) {
     if (longPressTriggered) { longPressTriggered = false; return }
     jumpToNode(nodeId)
+  }
+
+  function toggleShareMenu(event) {
+    if (event) event.stopPropagation()
+    shareMenuOpen.value = !shareMenuOpen.value
   }
 
   function ensureAudioCtx() {
@@ -1392,11 +1398,21 @@
           <span class="player-rating" v-if="bottomPlayer.rating">{{ bottomPlayer.rating }}</span>
         </div>
         <div class="boardtools">
-          <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start">&lt;&lt;</button>
-          <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null">&lt;-</button>
-          <button class="reverse" @click="flipBoard" title="flip board">↳↰</button>
-          <button class="redo" title="next" @click="redoAccuracy" :disabled="isImporting || currentNode.children.length === 0">-&gt;</button>
-          <button class="jumpend" @click="goToEnd" :disabled="isImporting || currentNode.children.length === 0" title="Jump to end">&gt;&gt;</button>
+          <button class="toolbar-icon-btn settings-toggle" @click="isSettingsOpen = true" title="Settings">⚙️</button>
+          <div class="boardtools-nav">
+            <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start">&lt;&lt;</button>
+            <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null">&lt;-</button>
+            <button class="reverse" @click="flipBoard" title="flip board">↳↰</button>
+            <button class="redo" title="next" @click="redoAccuracy" :disabled="isImporting || currentNode.children.length === 0">-&gt;</button>
+            <button class="jumpend" @click="goToEnd" :disabled="isImporting || currentNode.children.length === 0" title="Jump to end">&gt;&gt;</button>
+          </div>
+          <div class="share-menu-wrap">
+            <button class="toolbar-icon-btn" @click="toggleShareMenu" title="Copy game">📋</button>
+            <div v-if="shareMenuOpen" class="share-menu">
+              <button @click="copyPGN(); shareMenuOpen = false">Copy PGN</button>
+              <button @click="copyFEN(); shareMenuOpen = false">Copy FEN</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1404,11 +1420,10 @@
       <div class="analyze">
         <div class="analyzis-header">
           <h2 class="analyzis">Analysis <span v-if="isAnalyzing" class="thinking-dot" title="Engine is thinking"></span></h2>
-          <button class="settings-btn" @click="isSettingsOpen = true" title="Settings">⚙️</button>
         </div>
         <div v-if="moveData" class="move-data">
           <p class="depthnum">Depth {{ currentDepth }}</p>
-          <div class="line pretty-scroll">
+          <div class="line pretty-scroll" :class="{ analyzing: isAnalyzing }">
             <span class="evalnum2">{{ formatEval(moveData?.eval) }}</span>
             <span v-for="(move, idx) in sanLine" :key="'best-' + idx" class="line-move" @click="playLineMoves(moveData.best_line, idx + 1)">{{ prettyMove(move) }}&nbsp;</span>
           </div>
@@ -1422,10 +1437,6 @@
           </div>
           <p :style="{color: color}" class="accuracydescribtion">{{ isAccuracy }}</p>
           <p class="bestmove" v-if="movesListUCI.length > 0" @click="playMove">{{ displayBest() }}</p>
-          <div class="sharebar">
-            <button class="sharebtn" @click="copyPGN">Copy PGN</button>
-            <button class="sharebtn" @click="copyFEN">Copy FEN</button>
-          </div>
         </div>
       </div>
       <div class="moves">
@@ -1736,6 +1747,7 @@
     margin: 0 auto;
     overflow: auto;
     min-height: 200px;
+    max-height: 400px;
     scrollbar-width: thin;
     scrollbar-color: rgba(194, 197, 170, 0.4) rgba(0, 0, 0, 0.2);
   }
@@ -1873,11 +1885,10 @@
 
   .analyzis-header {
     display: flex;
-    justify-content: center; /* Changed to center the text */
+    justify-content: center;
     align-items: center;
     gap: 3rem;
     padding: 1rem 1rem 0.5rem;
-    position: relative; /* Added to anchor settings button */
   }
 
   .analyzis {
@@ -1892,29 +1903,6 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0;
-  }
-
-  .settings-btn {
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #fff;
-    border-radius: 8px;
-    width: 36px;
-    height: 36px;
-    flex-shrink: 0;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    position: absolute; /* Positioned absolutely so text remains centered */
-    right: 1rem;
-    top: 1rem;
-  }
-
-  .settings-btn:hover {
-    background: rgba(0, 0, 0, 0.4);
-    transform: scale(1.05);
   }
 
   .thinking-dot {
@@ -2105,7 +2093,7 @@
   .boardtools {
     display: flex;
     gap: 0.75rem;
-    justify-content: center;
+    justify-content: space-between;
     align-items: center;
     min-height: 3.2rem;
     width: 100%;
@@ -2116,7 +2104,75 @@
     border-radius: 10px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     margin: 0.4rem 0 0 0;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+  }
+
+  .boardtools-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+  }
+
+  /* Shared icon-button style for the toolbar's Settings / Copy game
+     buttons - visible on both desktop and mobile now. */
+  .toolbar-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--btn-idle);
+    width: clamp(30px, 6vw, 36px);
+    height: clamp(30px, 6vw, 36px);
+    border: none;
+    border-radius: 12px;
+    font-size: clamp(14px, 3vw, 16px);
+    color: #e8e8d0;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.2s ease;
+  }
+
+  .toolbar-icon-btn:hover {
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .share-menu-wrap {
+    position: relative;
+  }
+
+  .share-menu {
+    position: absolute;
+    bottom: 120%;
+    left: 0;
+    background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+    min-width: 7.5rem;
+    overflow: hidden;
+    z-index: 50;
+  }
+
+  .share-menu button {
+    background: transparent;
+    border: none;
+    color: #f4f0e3;
+    padding: 0.55rem 0.8rem;
+    text-align: left;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .share-menu button:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .share-menu button + button {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .reverse,
@@ -2296,29 +2352,6 @@
     background: rgba(103, 122, 228, 0.3);
   }
 
-  .sharebar {
-    display: flex;
-    justify-content: center;
-    gap: 0.6rem;
-    margin-top: 0.9rem;
-    padding: 0 1rem;
-  }
-
-  .sharebtn {
-    background: rgba(0, 0, 0, 0.22);
-    color: #f4f0e3;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
-    padding: 0.4rem 0.8rem;
-    font-size: 0.82rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .sharebtn:hover {
-    background: rgba(103, 122, 228, 0.3);
-  }
-
   .toast {
     position: fixed;
     bottom: 1.5rem;
@@ -2376,6 +2409,7 @@
 
   .report {
     padding: 1rem;
+    max-height: 400px;
     box-sizing: border-box;
   }
 
@@ -2427,11 +2461,11 @@
 
   .accuracy-score {
     font-family: "JetBrains Mono", monospace;
-    font-size: clamp(1.3rem, 6vw, 1.8rem);
+    font-size: clamp(1.2rem, 5vw, 1.7rem);
     font-weight: 700;
     color: #a8d97a;
     text-align: center;
-    margin: 0.4rem 0 0.7rem;
+    margin: 0.1rem 0 0.1rem;
   }
 
   .accuracy-score.empty {
@@ -2522,6 +2556,7 @@
   .explorer {
     padding: 0.4rem 0.5rem 0.6rem;
     box-sizing: border-box;
+    max-height: 400px;
   }
 
   .explorer-status {
@@ -2736,12 +2771,11 @@
       height: 18px;
     }
 
-    /* Fit the whole page (nav + board + analysis) into the viewport when it
-       reasonably can, instead of stacking three full-height blocks that force
-       scrolling back and forth between the board and the moves/report/explorer
-       panel. The analysis panel grows to soak up whatever's left below the
-       board; if a device is genuinely too short, the page still falls back to
-       scrolling normally rather than clipping anything. */
+    /* ---- Flatten the layout wrappers so their children become direct
+       flex items of .grid-layout and can be freely reordered with
+       `order` - lines above the board, board, then tabs, then the tool
+       bar, matching a Lichess-style mobile layout. Desktop's grid-area
+       layout above is completely untouched. ---- */
     .grid-layout {
       display: flex;
       flex-direction: column;
@@ -2749,13 +2783,19 @@
       padding: 0.4rem;
       gap: 0.4rem;
     }
-
-    .title-slot,
-    .board-area {
-      flex: 0 0 auto;
+    .board-area,
+    .board-wrapper,
+    .analysis-container {
+      display: contents;
     }
 
-    /* Let the board use the full available width instead of leaving a 5% margin */
+    .title-slot { order: 0; }
+    .analyze    { order: 1; } /* engine lines, small, above the board */
+    .player-bar { order: 2; }
+    .board-row  { order: 2; }
+    .moves      { order: 3; } /* moves / report / explorer */
+    .boardtools { order: 4; } /* nav + relocated settings/share, at the bottom */
+
     .board-wrapper {
       max-width: 100%;
     }
@@ -2766,43 +2806,57 @@
 
     .player-bar {
       padding: 0.22rem 0.55rem;
-      margin-bottom: 0.15rem;
+      margin: 0;
       font-size: 0.78rem;
     }
 
-    .player-bar.bottom {
-      margin-top: 0.15rem;
-    }
-
-    .boardtools {
-      min-height: 2.6rem;
-      padding: 0.3rem 0.6rem;
-      margin-top: 0.3rem;
-      gap: 0.5rem;
-    }
-
-    .analysis-container {
-      flex: 1 1 320px;
-      min-height: 0;
-      gap: 0.4rem;
-    }
-
+    /* ---- Engine lines: strip the panel chrome, drop the header, depth
+       text, move description and best-move hint (Copy PGN/FEN and
+       Settings live in the sticky toolbar below) - just the line rows. ---- */
     .analyze {
-      flex: 0 0 auto;
-      max-height: 34vh;
-      overflow-y: auto;
+      background: none;
+      box-shadow: none;
+      border: none;
+      padding: 0;
       margin: 0;
       max-width: none;
       min-height: 0;
     }
-
-    .analyzis-header {
-      padding: 0.6rem 0.8rem 0.3rem;
+    .move-data {
+      padding: 0;
+    }
+    .analyzis-header,
+    .depthnum,
+    .accuracydescribtion,
+    .bestmove {
+      display: none;
+    }
+    .line,
+    .secondline {
+      font-size: 0.74rem;
+      padding: 0.32rem 0.45rem;
+      margin: 3px 0;
+      gap: 0.35rem;
+    }
+    .evalnum2,
+    .evalnum3 {
+      font-size: 0.78rem;
+      min-width: 2.8rem;
+      padding: 0 0.4rem;
+    }
+    .line.analyzing {
+      animation: linePulse 1.2s ease-in-out infinite;
+    }
+    @keyframes linePulse {
+      0%, 100% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4); }
+      50% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(106, 209, 63, 0.55); }
     }
 
+    /* ---- Moves / Report / Explorer now get the room the analysis
+       panel used to take up. ---- */
     .moves {
       flex: 1 1 auto;
-      min-height: 450px;
+      min-height: 280px;
       height: auto;
       max-width: none;
       margin: 0;
@@ -2843,7 +2897,6 @@
       padding: 0.2rem 0.25rem;
     }
 
-    /* Explorer: shorter rows so more candidate moves fit before scrolling */
     .explorer {
       padding: 0.4rem 0.5rem 0.6rem;
     }
@@ -2893,6 +2946,26 @@
     .explorer-db-toggle button {
       padding: 0.32rem;
       font-size: 0.72rem;
+    }
+
+    /* ---- Tool bar: sticks to the bottom of the viewport as a fallback
+       for short devices that still need to scroll (Lichess-style bottom
+       nav). Buttons are spaced using justify-content: space-between 
+       so the side items touch the edges and the nav stays in the middle. ---- */
+    .boardtools {
+      position: sticky;
+      bottom: 0;
+      z-index: 40;
+      min-height: 2.6rem;
+      padding: 0.3rem 0.5rem calc(0.3rem + env(safe-area-inset-bottom, 0px));
+      margin-top: 0;
+      gap: 0.4rem;
+      justify-content: space-between;
+      flex-wrap: nowrap;
+    }
+    .boardtools-nav {
+      gap: 1rem;
+      justify-content: center;
     }
   }
 </style>
