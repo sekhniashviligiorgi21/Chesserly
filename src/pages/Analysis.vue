@@ -2931,6 +2931,7 @@ async function fetchOpeningNameForSave(uciList) {
 
   .explorer {
     padding: 0.4rem 0.5rem 0.6rem;
+    min-height: 280px; /* Prevents container shrink during reload/spinner state */
   }
 
   .explorer-header {
