@@ -109,13 +109,13 @@ if (route.query.pgn) {
   if (match) gameResult.value = match[1]
 }
 
-const opening = ref(" ")
-const openingEco = ref(" ")
+const opening = ref("")
+const openingEco = ref("")
 
 const explorerStats = shallowRef(null)
 const explorerMoves = shallowRef([])
 const explorerLoading = ref(false)
-const explorerError = ref(" ")
+const explorerError = ref("")
 const explorerDb = ref('masters')
 
 // Accuracy classification colors, reused both for the move-description text
@@ -173,17 +173,17 @@ async function importLichessExplorer() {
       openingEco.value = last.eco
     } else {
       opening.value = movesListUCI.value.length === 0 ? "Starting position" : "Out of book"
-      openingEco.value = " "
+      openingEco.value = ""
     }
     explorerStats.value = null
     explorerMoves.value = []
-    explorerError.value = " "
+    explorerError.value = ""
     explorerLoading.value = false
     return
   }
 
   explorerLoading.value = true
-  explorerError.value = " "
+  explorerError.value = ""
   const uciList = movesListUCI.value
 
   if (uciList.length > 40) {
@@ -194,7 +194,7 @@ async function importLichessExplorer() {
       openingEco.value = last.eco
     } else {
       opening.value = `${explorerDb.value === 'masters' ? 'Master' : 'Player'} games limit reached (max 40 moves)`
-      openingEco.value = " "
+      openingEco.value = ""
     }
     explorerLoading.value = false
     return
@@ -217,11 +217,11 @@ async function importLichessExplorer() {
         openingEco.value = last.eco
       } else {
         opening.value = `No ${explorerDb.value === 'masters' ? 'master' : 'player'} games at this position`
-        openingEco.value = " "
+        openingEco.value = ""
       }
       explorerStats.value = null
       explorerMoves.value = []
-      explorerError.value = " "
+      explorerError.value = ""
       return
     }
 
@@ -250,7 +250,7 @@ async function importLichessExplorer() {
         openingEco.value = last.eco
       } else {
         opening.value = uciList.length === 0 ? "Starting position" : "Out of book"
-        openingEco.value = " "
+        openingEco.value = ""
       }
     }
 
@@ -280,7 +280,7 @@ async function importLichessExplorer() {
       })
       .sort((a, b) => b.total - a.total)
 
-    explorerError.value = " "
+    explorerError.value = ""
   } catch (error) {
     console.warn("Explorer fetch failed:", error)
     explorerError.value = "No connection to explorer"
@@ -1313,7 +1313,7 @@ async function saveGameInsights() {
 async function fetchOpeningNameForSave(uciList) {
   const OPENING_LOOKUP_PLIES = 12
   const playList = uciList.slice(0, OPENING_LOOKUP_PLIES)
-  const bookList = playList.join(", ")
+  const bookList = playList.join(",")
   const url = bookList
     ? `../../api/explorer?db=masters&play=${encodeURIComponent(bookList)}`
     : `../../api/explorer?db=masters`
