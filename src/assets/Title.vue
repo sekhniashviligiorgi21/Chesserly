@@ -1,9 +1,14 @@
 <script setup>
-  import { ref, computed } from 'vue' 
+  import { ref, computed, watch } from 'vue'
   import { useRouter, useRoute } from 'vue-router'
 
   const router = useRouter()
   const route = useRoute()
+
+  const menuOpen = ref(false)
+
+  // Close the mobile dropdown whenever the route changes
+  watch(() => route.path, () => { menuOpen.value = false })
 
   const activeColor = "var(--title-btn-active-1), var(--title-btn-active-2)"
   const idleColor = "var(--title-btn-idle-1), var(--title-btn-idle-2)"
@@ -12,84 +17,80 @@
     return activeButton.value === buttonName ? activeColor : idleColor
   }
 
-  function analyzeClick() {
-    router.push('/')
+  function navTo(path) {
+    router.push(path)
+    menuOpen.value = false
   }
 
-  function importClick() {
-    router.push('/Review')
-  }
-
-  function insightsClick(){
-    router.push('/Insights')
-  }
-
-  function gameClick() {
-    router.push('/vsComputer')
-  }
-
-  function puzzlesClick() {
-    router.push('/Puzzles')
-  }
+  function analyzeClick() { navTo('/') }
+  function importClick() { navTo('/Review') }
+  function insightsClick() { navTo('/Insights') }
+  function gameClick() { navTo('/vsComputer') }
+  function puzzlesClick() { navTo('/Puzzles') }
 
   const activeButton = computed(() => {
     if (route.path === '/Review') return 'import'
     if (route.path === '/Analysis') return 'analyze'
     if (route.path === '/Insights') return 'insight'
     if (route.path === '/vsComputer') return 'computer'
-    if (route.path === '/Puzzles') return 'puzzles' 
+    if (route.path === '/Puzzles') return 'puzzles'
     return 'analyze'
   })
 </script>
 
-
 <template>
-  <div class="title-container">
+  <div class="title-container" :class="{ 'menu-open': menuOpen }">
     <h1 class="title">♔ CHESSERLY</h1>
-
     <button
-      class="btn"
-      :style="{ background: `linear-gradient(${bgColor('import')})` }"
-      @click="importClick()"
+      class="menu-toggle"
+      :aria-expanded="menuOpen"
+      aria-label="Navigation menu"
+      @click="menuOpen = !menuOpen"
     >
-      🎮 GameImport
+      {{ menuOpen ? '✕' : '☰' }}
     </button>
-
-    <button
-      class="btn"
-      :style="{ background: `linear-gradient(${bgColor('analyze')})` }"
-      @click="analyzeClick()"
-    >
-      🔎 Analyse
-    </button>
-
-    <button
-      class="btn"
-      :style="{ background: `linear-gradient(${bgColor('insight')})` }"
-      @click="insightsClick()"
-    >
-      📊 Insights
-    </button>
-
-    <button
-      class="btn tooltip-btn"
-      :style="{ background: `linear-gradient(${bgColor('computer')})` }"
-      @click="gameClick()"
-      disabled
-      data-tooltip="Coming soon..."
-    >
-      🤖 VS Computer
-    </button>
-
-    <button
-      class="btn tooltip-btn"
-      :style="{ background: `linear-gradient(${bgColor('puzzles')})` }"
-      @click="puzzlesClick()"
-      disabled
-      data-tooltip="Coming soon..."
-    >
-      🧩 Puzzles
-    </button>
+    <div v-if="menuOpen" class="menu-backdrop" @click="menuOpen = false"></div>
+    <nav class="title-nav">
+      <button
+        class="btn"
+        :style="{ background: `linear-gradient(${bgColor('import')})` }"
+        @click="importClick()"
+      >
+        🎮 GameImport
+      </button>
+      <button
+        class="btn"
+        :style="{ background: `linear-gradient(${bgColor('analyze')})` }"
+        @click="analyzeClick()"
+      >
+        🔎 Analyse
+      </button>
+      <button
+        class="btn"
+        :style="{ background: `linear-gradient(${bgColor('insight')})` }"
+        @click="insightsClick()"
+      >
+        📊 Insights
+      </button>
+      <button
+        class="btn tooltip-btn"
+        :style="{ background: `linear-gradient(${bgColor('computer')})` }"
+        @click="gameClick()"
+        disabled
+        data-tooltip="Coming soon..."
+      >
+        🤖 VS Computer
+      </button>
+      <button
+        class="btn tooltip-btn"
+        :style="{ background: `linear-gradient(${bgColor('puzzles')})` }"
+        @click="puzzlesClick()"
+        disabled
+        data-tooltip="Coming soon..."
+      >
+        🧩 Puzzles
+      </button>
+    </nav>
   </div>
 </template>
 
@@ -106,8 +107,8 @@
     box-sizing: border-box;
     background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
     border-radius: 16px;
-    border: 1px solid rgba(255,255,255,0.08);
-    box-shadow: 0 15px 35px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.1);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
   .title {
@@ -170,6 +171,23 @@
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
   }
 
+  /* ---- Desktop nav column (unchanged look) ---- */
+  .title-nav {
+    display: flex;
+    align-items: center;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  /* ---- Mobile-only pieces, hidden on desktop ---- */
+  .menu-toggle {
+    display: none;
+  }
+
+  .menu-backdrop {
+    display: none;
+  }
+
   /* Instant Tooltip Implementation */
   .tooltip-btn {
     position: relative;
@@ -198,7 +216,7 @@
 
   /* Tiny arrow below the tooltip box */
   .tooltip-btn::before {
-    content: "";
+    content: " ";
     position: absolute;
     bottom: 100%;
     left: 50%;
@@ -219,30 +237,89 @@
   }
 
   @media (max-width: 767px) {
+    /* Slim one-row app bar: menu button on the left, brand centered.
+       The 3rd grid column is an invisible spacer matching the button's
+       width so the title stays optically centered. */
     .title-container {
-      flex-direction: row;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: 2.2rem minmax(0, 1fr) 2.2rem;
+      align-items: center;
+      gap: 0.5rem;
       width: 100%;
       height: auto;
-      margin: 0 0 1rem 0;
-      padding: 0.75rem 1rem;
-      justify-content: center;
-      align-items: center;
-      gap: 0.6rem;
-    }
-    .title {
-      width: 100%;
       margin: 0 0 0.25rem 0;
+      padding: 0.45rem 0.75rem;
+      position: relative;
+      z-index: 45;
+    }
+
+    .menu-toggle {
+      grid-column: 1;
+      grid-row: 1;
+      justify-self: start;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      width: 2.2rem;
+      height: 2.2rem;
+      border: none;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #faedcd;
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+
+    .title {
+      grid-column: 2;
+      grid-row: 1;
+      justify-self: center;
+      min-width: 0;
+      margin: 0;
       text-align: center;
+      font-size: 1.05rem;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
     }
-    button {
+
+    .menu-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+    }
+
+    .title-nav {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.35rem);
+      left: 0;
+      right: 0;
+      flex-direction: column;
+      align-items: stretch;
+      padding: 0.5rem;
+      background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .title-container.menu-open .title-nav {
+      display: flex;
+    }
+
+    .title-nav .btn {
       margin-top: 0;
-      flex: 1 1 auto;
-      min-width: 6rem;
+      width: 100%;
     }
-    
+
+    .title-nav .btn + .btn {
+      margin-top: 0.45rem;
+    }
+
     .tooltip-btn::after {
-    bottom: 125%;
+      bottom: 125%;
     }
   }
 </style>
