@@ -1,1483 +1,1483 @@
 <script setup>
-import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { Chess } from 'chess.js'
-import { TheChessboard } from 'vue3-chessboard'
-import { auth, db } from '../firebase'
-import { onAuthStateChanged } from 'firebase/auth'
-import { collection, addDoc, serverTimestamp, query, where, getDocs, updateDoc, doc } from 'firebase/firestore'
-import 'vue3-chessboard/style.css'
-import Title from "../assets/Title.vue"
-import SettingsPanel from "../assets/SettingsPanel.vue"
-import { startEngine, getEvaluation, cancelAnalysis } from "../engine/engine.js"
-import { useRoute, useRouter } from 'vue-router'
+  import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+  import { Chess } from 'chess.js'
+  import { TheChessboard } from 'vue3-chessboard'
+  import { auth, db } from '../firebase'
+  import { onAuthStateChanged } from 'firebase/auth'
+  import { collection, addDoc, serverTimestamp, query, where, getDocs, updateDoc, doc } from 'firebase/firestore'
+  import 'vue3-chessboard/style.css'
+  import Title from "../assets/Title.vue"
+  import SettingsPanel from "../assets/SettingsPanel.vue"
+  import { startEngine, getEvaluation, cancelAnalysis } from "../engine/engine.js"
+  import { useRoute, useRouter } from 'vue-router'
 
-const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
-watch(currentTheme, (newTheme) => {
-  document.documentElement.setAttribute('data-theme', newTheme)
-  localStorage.setItem('chesslab_theme', newTheme)
-}, { immediate: true })
+  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
+  watch(currentTheme, (newTheme) => {
+    document.documentElement.setAttribute('data-theme', newTheme)
+    localStorage.setItem('chesslab_theme', newTheme)
+  }, { immediate: true })
 
-let boardReady = false
-let engineReady = false
+  let boardReady = false
+  let engineReady = false
 
-onMounted(async () => {
-  window.addEventListener('keydown', handleKeyDown)
-  window.addEventListener('click', closeContextMenu)
-  window.addEventListener('scroll', closeContextMenu, true)
+  onMounted(async () => {
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('click', closeContextMenu)
+    window.addEventListener('scroll', closeContextMenu, true)
 
-  activeTab.value = 'moves'
+    activeTab.value = 'moves'
 
-  await startEngine()
-  engineReady = true
+    await startEngine()
+    engineReady = true
 
-  if (route.query.fen) {
-    await loadFen(route.query.fen)
-    await getAccuracy()
-  } else if (route.query.moves) {
-    await tryLoadImportedGame()
-  } else {
-    await getAccuracy()
-  }
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeyDown)
-  window.removeEventListener('click', closeContextMenu)
-  window.removeEventListener('scroll', closeContextMenu, true)
-  clearTimeout(toastTimeout)
-  clearTimeout(longPressTimer)
-})
-
-const route = useRoute()
-const router = useRouter()
-const isSettingsOpen = ref(false)
-const isFlipped = computed(() => (rotate.value / 180) % 2 === 1)
-
-const chess = new Chess()
-const greedyChess = new Chess()
-const excellentChess = new Chess()
-const bestChess = new Chess()
-const thirdChess = new Chess()
-
-const DEPTH_STORAGE_KEY = 'chesslab_targetDepth'
-function loadStoredDepth() {
-  const stored = Number(localStorage.getItem(DEPTH_STORAGE_KEY))
-  return stored >= 10 && stored <= 30 ? stored : 10
-}
-
-const moveData = shallowRef(null)
-const boardAPI = shallowRef(null)
-const isAnalyzing = ref(false)
-const isImporting = ref(false)
-const importProgress = ref({ current: 0, total: 0 })
-let importCancelled = false
-const currentDepth = ref(10)
-const targetDepth = ref(loadStoredDepth())
-const height = ref(47.75)
-const cp = ref(0)
-const rotate = ref(0)
-const isAccuracy = ref(" ")
-const color = ref(" ")
-const sanLine = ref([])
-const bestMoveSan = ref('')
-const excellentSanLine = ref([])
-const treeVersion = ref(0)
-const movesListUCI = ref([])
-const lastMoveSquare = ref(null)
-const lastMoveFromSquare = ref(null)
-const lastMoveAccuracy = ref(null)
-const boardRef = ref(null)
-const movesListRef = ref(null)
-const thirdSanLine = ref([])
-const soundOn = ref(true)
-const bestArrowSquares = ref(null)
-const toastMessage = ref('')
-const activeTab = ref('moves')
-const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
-const shareMenuOpen = ref(false)
-
-// --- Engine Toggle & MultiPV State ---
-const isEngineEnabled = ref(true)
-
-const BEST_ARROW_STORAGE_KEY = 'chesslab_showBestArrow'
-
-function loadStoredBestArrowSetting() {
-  const stored = localStorage.getItem(BEST_ARROW_STORAGE_KEY)
-
-  // Default to true if never saved
-  if (stored === null) return true
-
-  return stored === 'true'
-}
-
-const showBestArrow = ref(loadStoredBestArrowSetting())
-
-watch(showBestArrow, (enabled) => {
-  localStorage.setItem(BEST_ARROW_STORAGE_KEY, String(enabled))
-
-  if (!boardAPI.value) return
-
-  if (!enabled) {
-    boardAPI.value.hideMoves()
-  } else {
-    drawBestArrow()
-  }
-})
-
-function loadStoredMultiPV() {
-  const stored = Number(localStorage.getItem('chesslab_multiPV'))
-  if (stored >= 1 && stored <= 3) return stored
-  localStorage.setItem('chesslab_multiPV', '3')
-  return 3
-}
-
-function handleBoardClick() {
-  // When the user clicks the board, chessground's default behavior is to clear 
-  // ALL drawings (both user-drawn and app-drawn). 
-  // By redrawing the app arrow immediately after the click, we make it persistent,
-  // while user-drawn arrows remain erased.
-  nextTick(() => {
-    drawBestArrow()
+    if (route.query.fen) {
+      await loadFen(route.query.fen)
+      await getAccuracy()
+    } else if (route.query.moves) {
+      await tryLoadImportedGame()
+    } else {
+      await getAccuracy()
+    }
   })
-}
 
-const analysisMultiPV = ref(loadStoredMultiPV())
+  onBeforeUnmount(() => {
+    window.removeEventListener('keydown', handleKeyDown)
+    window.removeEventListener('click', closeContextMenu)
+    window.removeEventListener('scroll', closeContextMenu, true)
+    clearTimeout(toastTimeout)
+    clearTimeout(longPressTimer)
+  })
 
-watch(analysisMultiPV, (val) => {
-  localStorage.setItem('chesslab_multiPV', String(val))
-  if (isEngineEnabled.value) getAccuracy()
-})
+  const route = useRoute()
+  const router = useRouter()
+  const isSettingsOpen = ref(false)
+  const isFlipped = computed(() => (rotate.value / 180) % 2 === 1)
 
-watch(isEngineEnabled, () => {
-  getAccuracy()
-})
+  const chess = new Chess()
+  const greedyChess = new Chess()
+  const excellentChess = new Chess()
+  const bestChess = new Chess()
+  const thirdChess = new Chess()
 
-function requestAnalysisForNewMove() {
-  if (isImporting.value) return
+  const DEPTH_STORAGE_KEY = 'chesslab_targetDepth'
+  function loadStoredDepth() {
+    const stored = Number(localStorage.getItem(DEPTH_STORAGE_KEY))
+    return stored >= 10 && stored <= 30 ? stored : 10
+  }
 
-  if (!isEngineEnabled.value) {
-    isEngineEnabled.value = true
-  } else {
+  const moveData = shallowRef(null)
+  const boardAPI = shallowRef(null)
+  const isAnalyzing = ref(false)
+  const isImporting = ref(false)
+  const importProgress = ref({ current: 0, total: 0 })
+  let importCancelled = false
+  const currentDepth = ref(10)
+  const targetDepth = ref(loadStoredDepth())
+  const height = ref(47.75)
+  const cp = ref(0)
+  const rotate = ref(0)
+  const isAccuracy = ref(" ")
+  const color = ref(" ")
+  const sanLine = ref([])
+  const bestMoveSan = ref('')
+  const excellentSanLine = ref([])
+  const treeVersion = ref(0)
+  const movesListUCI = ref([])
+  const lastMoveSquare = ref(null)
+  const lastMoveFromSquare = ref(null)
+  const lastMoveAccuracy = ref(null)
+  const boardRef = ref(null)
+  const movesListRef = ref(null)
+  const thirdSanLine = ref([])
+  const soundOn = ref(true)
+  const bestArrowSquares = ref(null)
+  const toastMessage = ref('')
+  const activeTab = ref('moves')
+  const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
+  const shareMenuOpen = ref(false)
+
+  // --- Engine Toggle & MultiPV State ---
+  const isEngineEnabled = ref(true)
+
+  const BEST_ARROW_STORAGE_KEY = 'chesslab_showBestArrow'
+
+  function loadStoredBestArrowSetting() {
+    const stored = localStorage.getItem(BEST_ARROW_STORAGE_KEY)
+
+    // Default to true if never saved
+    if (stored === null) return true
+
+    return stored === 'true'
+  }
+
+  const showBestArrow = ref(loadStoredBestArrowSetting())
+
+  watch(showBestArrow, (enabled) => {
+    localStorage.setItem(BEST_ARROW_STORAGE_KEY, String(enabled))
+
+    if (!boardAPI.value) return
+
+    if (!enabled) {
+      boardAPI.value.hideMoves()
+    } else {
+      drawBestArrow()
+    }
+  })
+
+  function loadStoredMultiPV() {
+    const stored = Number(localStorage.getItem('chesslab_multiPV'))
+    if (stored >= 1 && stored <= 3) return stored
+    localStorage.setItem('chesslab_multiPV', '3')
+    return 3
+  }
+
+  function handleBoardClick() {
+    // When the user clicks the board, chessground's default behavior is to clear 
+    // ALL drawings (both user-drawn and app-drawn). 
+    // By redrawing the app arrow immediately after the click, we make it persistent,
+    // while user-drawn arrows remain erased.
+    nextTick(() => {
+      drawBestArrow()
+    })
+  }
+
+  const analysisMultiPV = ref(loadStoredMultiPV())
+
+  watch(analysisMultiPV, (val) => {
+    localStorage.setItem('chesslab_multiPV', String(val))
+    if (isEngineEnabled.value) getAccuracy()
+  })
+
+  watch(isEngineEnabled, () => {
     getAccuracy()
-  }
-}
+  })
 
-const whiteName = ref('White')
-const blackName = ref('Black')
-const whiteRating = ref(null)
-const blackRating = ref(null)
-const hasPlayerInfo = ref(false)
+  function requestAnalysisForNewMove() {
+    if (isImporting.value) return
 
-const gameResult = ref(null)
-if (route.query.pgn) {
-  const match = route.query.pgn.match(/\[Result\s+"([^"]+)"\]/)
-  if (match) gameResult.value = match[1]
-}
-
-const opening = ref("")
-const openingEco = ref("")
-
-const explorerStats = shallowRef(null)
-const explorerMoves = shallowRef([])
-const explorerLoading = ref(false)
-const explorerError = ref("")
-const explorerDb = ref('masters')
-
-const accuracyColors = {
-  brilliant: '#03aea7', great: '#4c8cb5', best: '#6ad13f', excellent: '#90bc36',
-  good: '#8eae83', book: '#ad8760', inaccuracy: '#f2bc43', mistake: '#f38800', blunder: '#FF0000'
-}
-function hexToRgba(hex, alpha) {
-  const n = parseInt(hex.replace('#', ''), 16)
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
-}
-const lastMoveHighlightColor = computed(() => {
-  const c = accuracyColors[lastMoveAccuracy.value]
-  return c ? hexToRgba(c, 0.35) : null
-})
-
-watch([lastMoveFromSquare, lastMoveSquare], ([from, to]) => {
-  if (!boardAPI.value) return
-  boardAPI.value.setConfig({ lastMove: from && to ? [from, to] : undefined })
-})
-
-function isExplorerOutOfBook(node, db) {
-  let n = node
-  while (n) {
-    if (n.explorerOutOfBook && n.explorerOutOfBook[db]) return true
-    n = n.parent
-  }
-  return false
-}
-
-function markNodeOutOfBook(db) {
-  if (!currentNode.value.explorerOutOfBook) currentNode.value.explorerOutOfBook = {}
-  currentNode.value.explorerOutOfBook[db] = true
-}
-
-function getLastOpening(node) {
-  let n = node
-  while (n) {
-    if (n.lastOpening) return n.lastOpening
-    n = n.parent
-  }
-  return null
-}
-
-async function importLichessExplorer() {
-  if (isExplorerOutOfBook(currentNode.value, explorerDb.value)) {
-    const last = getLastOpening(currentNode.value)
-    if (last) {
-      opening.value = last.name
-      openingEco.value = last.eco
+    if (!isEngineEnabled.value) {
+      isEngineEnabled.value = true
     } else {
-      opening.value = movesListUCI.value.length === 0 ? "Starting position" : "Out of book"
-      openingEco.value = ""
+      getAccuracy()
     }
-    explorerStats.value = null
-    explorerMoves.value = []
+  }
+
+  const whiteName = ref('White')
+  const blackName = ref('Black')
+  const whiteRating = ref(null)
+  const blackRating = ref(null)
+  const hasPlayerInfo = ref(false)
+
+  const gameResult = ref(null)
+  if (route.query.pgn) {
+    const match = route.query.pgn.match(/\[Result\s+"([^"]+)"\]/)
+    if (match) gameResult.value = match[1]
+  }
+
+  const opening = ref("")
+  const openingEco = ref("")
+
+  const explorerStats = shallowRef(null)
+  const explorerMoves = shallowRef([])
+  const explorerLoading = ref(false)
+  const explorerError = ref("")
+  const explorerDb = ref('masters')
+
+  const accuracyColors = {
+    brilliant: '#03aea7', great: '#4c8cb5', best: '#6ad13f', excellent: '#90bc36',
+    good: '#8eae83', book: '#ad8760', inaccuracy: '#f2bc43', mistake: '#f38800', blunder: '#FF0000'
+  }
+  function hexToRgba(hex, alpha) {
+    const n = parseInt(hex.replace('#', ''), 16)
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
+  }
+  const lastMoveHighlightColor = computed(() => {
+    const c = accuracyColors[lastMoveAccuracy.value]
+    return c ? hexToRgba(c, 0.35) : null
+  })
+
+  watch([lastMoveFromSquare, lastMoveSquare], ([from, to]) => {
+    if (!boardAPI.value) return
+    boardAPI.value.setConfig({ lastMove: from && to ? [from, to] : undefined })
+  })
+
+  function isExplorerOutOfBook(node, db) {
+    let n = node
+    while (n) {
+      if (n.explorerOutOfBook && n.explorerOutOfBook[db]) return true
+      n = n.parent
+    }
+    return false
+  }
+
+  function markNodeOutOfBook(db) {
+    if (!currentNode.value.explorerOutOfBook) currentNode.value.explorerOutOfBook = {}
+    currentNode.value.explorerOutOfBook[db] = true
+  }
+
+  function getLastOpening(node) {
+    let n = node
+    while (n) {
+      if (n.lastOpening) return n.lastOpening
+      n = n.parent
+    }
+    return null
+  }
+
+  async function importLichessExplorer() {
+    if (isExplorerOutOfBook(currentNode.value, explorerDb.value)) {
+      const last = getLastOpening(currentNode.value)
+      if (last) {
+        opening.value = last.name
+        openingEco.value = last.eco
+      } else {
+        opening.value = movesListUCI.value.length === 0 ? "Starting position" : "Out of book"
+        openingEco.value = ""
+      }
+      explorerStats.value = null
+      explorerMoves.value = []
+      explorerError.value = ""
+      explorerLoading.value = false
+      return
+    }
+
+    explorerLoading.value = true
     explorerError.value = ""
-    explorerLoading.value = false
-    return
-  }
+    const uciList = movesListUCI.value
 
-  explorerLoading.value = true
-  explorerError.value = ""
-  const uciList = movesListUCI.value
-
-  if (uciList.length > 40) {
-    markNodeOutOfBook(explorerDb.value)
-    const last = getLastOpening(currentNode.value)
-    if (last) {
-      opening.value = last.name
-      openingEco.value = last.eco
-    } else {
-      opening.value = `${explorerDb.value === 'masters' ? 'Master' : 'Player'} games limit reached (max 40 moves)`
-      openingEco.value = ""
-    }
-    explorerLoading.value = false
-    return
-  }
-
-  const bookList = uciList.join(",")
-  const dbParam = explorerDb.value
-  const url = bookList
-    ? `../../api/explorer?db=${dbParam}&play=${encodeURIComponent(bookList)}`
-    : `../../api/explorer?db=${dbParam}`
-
-  try {
-    const response = await fetch(url)
-
-    if (response.status === 204) {
+    if (uciList.length > 40) {
       markNodeOutOfBook(explorerDb.value)
       const last = getLastOpening(currentNode.value)
       if (last) {
         opening.value = last.name
         openingEco.value = last.eco
       } else {
-        opening.value = `No ${explorerDb.value === 'masters' ? 'master' : 'player'} games at this position`
+        opening.value = `${explorerDb.value === 'masters' ? 'Master' : 'Player'} games limit reached (max 40 moves)`
         openingEco.value = ""
       }
-      explorerStats.value = null
-      explorerMoves.value = []
-      explorerError.value = ""
+      explorerLoading.value = false
       return
     }
 
-    if (!response.ok) {
-      explorerError.value = `Explorer error (${response.status})`
-      explorerStats.value = null
-      explorerMoves.value = []
-      return
-    }
+    const bookList = uciList.join(",")
+    const dbParam = explorerDb.value
+    const url = bookList
+      ? `../../api/explorer?db=${dbParam}&play=${encodeURIComponent(bookList)}`
+      : `../../api/explorer?db=${dbParam}`
 
-    const data = await response.json()
-
-    if (data.opening) {
-      opening.value = data.opening.name
-      openingEco.value = data.opening.eco
-      currentNode.value.lastOpening = {
-        name: data.opening.name,
-        eco: data.opening.eco
-      }
-    } else {
-      const last = getLastOpening(currentNode.value.parent)
-      if (last) {
-        opening.value = last.name
-        openingEco.value = last.eco
-      } else {
-        opening.value = uciList.length === 0 ? "Starting position" : "Out of book"
-        openingEco.value = ""
-      }
-    }
-
-    const total = (data.white ?? 0) + (data.draws ?? 0) + (data.black ?? 0)
-
-    if (total === 0 && uciList.length > 0) {
-      markNodeOutOfBook(explorerDb.value)
-    }
-
-    explorerStats.value = total > 0 ? {
-      white: Math.round((data.white / total) * 100),
-      draws: Math.round((data.draws / total) * 100),
-      black: Math.round((data.black / total) * 100),
-      total
-    } : null
-
-    explorerMoves.value = (data.moves ?? [])
-      .map(m => {
-        const moveTotal = (m.white ?? 0) + (m.draws ?? 0) + (m.black ?? 0)
-        return {
-          san: m.san, uci: m.uci, total: moveTotal,
-          percent: total > 0 ? Math.round((moveTotal / total) * 100) : 0,
-          white: moveTotal > 0 ? Math.round((m.white / moveTotal) * 100) : 0,
-          draws: moveTotal > 0 ? Math.round((m.draws / moveTotal) * 100) : 0,
-          black: moveTotal > 0 ? Math.round((m.black / moveTotal) * 100) : 0,
-        }
-      })
-      .sort((a, b) => b.total - a.total)
-
-    explorerError.value = ""
-  } catch (error) {
-    console.warn("Explorer fetch failed:", error)
-    explorerError.value = "No connection to explorer"
-    explorerStats.value = null
-    explorerMoves.value = []
-  } finally {
-    explorerLoading.value = false
-  }
-}
-
-function playExplorerMove(uci) {
-  if (isImporting.value) return
-
-  const result = applyUciMove(uci)
-  if (!result) return
-
-  soundForLastMove(result)
-  boardAPI.value.setPosition(chess.fen())
-  requestAnalysisForNewMove()
-}
-
-if (route.query.white || route.query.black) {
-  hasPlayerInfo.value = true
-  if (route.query.white) whiteName.value = route.query.white
-  if (route.query.black) blackName.value = route.query.black
-  if (route.query.whiteRating) whiteRating.value = route.query.whiteRating
-  if (route.query.blackRating) blackRating.value = route.query.blackRating
-}
-
-const isWhiteWinner = computed(() => gameResult.value === '1-0')
-const isBlackWinner = computed(() => gameResult.value === '0-1')
-
-const topPlayer = computed(() => {
-  const isWhite = isFlipped.value
-  return {
-    name: isWhite ? whiteName.value : blackName.value,
-    rating: isWhite ? whiteRating.value : blackRating.value,
-    side: isWhite ? 'white' : 'black',
-    isWinner: isWhite ? isWhiteWinner.value : isBlackWinner.value
-  }
-})
-
-const bottomPlayer = computed(() => {
-  const isWhite = !isFlipped.value
-  return {
-    name: isWhite ? whiteName.value : blackName.value,
-    rating: isWhite ? whiteRating.value : blackRating.value,
-    side: isWhite ? 'white' : 'black',
-    isWinner: isWhite ? isWhiteWinner.value : isBlackWinner.value
-  }
-})
-
-let longPressTimer = null
-let longPressTriggered = false
-let toastTimeout = null
-let audioCtx = null
-let lastPress = 0
-
-const moveTree = {
-  id: 0, san: null, uci: null, fen: chess.fen(),
-  accuracy: null, analysisData: null, parent: null, children: []
-}
-let nodeIdCounter = 1
-const nodeMap = { 0: moveTree }
-const currentNode = shallowRef(moveTree)
-
-const renderedMoves = computed(() => {
-  treeVersion.value
-  const rows = []
-  function makeCell(node, moveNum, showAsStart, depth) {
-    const isWhite = moveNum % 2 === 1
-    return {
-      key: `cell-${node.id}`, node,
-      displayNum: Math.ceil(moveNum / 2),
-      isWhite, showNum: isWhite || showAsStart, variant: depth > 0
-    }
-  }
-  function walk(startNode, moveNum, depth = 0, isStartOfLine = true) {
-    let current = startNode
-    let ply = moveNum
-    let firstRow = true
-    if (!current.san) {
-      if (current.children.length === 0) return
-      walk(current.children[0], ply, depth, isStartOfLine)
-      for (const variant of current.children.slice(1)) walk(variant, ply, depth + 1, true)
-      return
-    }
-    while (current) {
-      const mainReply = current.children[0] ?? null
-      rows.push({
-        key: `row-${current.id}`, depth,
-        cells: [
-          makeCell(current, ply, firstRow && isStartOfLine, depth),
-          mainReply ? makeCell(mainReply, ply + 1, false, depth) : null
-        ]
-      })
-      for (const variant of current.children.slice(1)) walk(variant, ply + 1, depth + 1, true)
-      if (mainReply) for (const variant of mainReply.children.slice(1)) walk(variant, ply + 2, depth + 1, true)
-      if (!mainReply) break
-      current = mainReply.children[0] ?? null
-      ply += 2
-      firstRow = false
-    }
-  }
-  walk(moveTree, 1)
-  return rows
-})
-
-function deleteMove(nodeId) {
-  const node = nodeMap[nodeId]
-  if (!node || node.parent === null) return
-  const parent = node.parent
-  const idx = parent.children.indexOf(node)
-  if (idx !== -1) parent.children.splice(idx, 1)
-  function collectIds(n, ids) { ids.push(n.id); for (const child of n.children) collectIds(child, ids); return ids }
-  const idsToRemove = collectIds(node, [])
-  const currentWasRemoved = idsToRemove.includes(currentNode.value.id)
-  for (const id of idsToRemove) delete nodeMap[id]
-  treeVersion.value++
-  if (currentWasRemoved) jumpToNode(parent.id)
-}
-
-function showContextMenu(x, y, nodeId) {
-  const menuWidth = 160, menuHeight = 44
-  contextMenu.value = {
-    visible: true,
-    x: Math.min(x, window.innerWidth - menuWidth - 8),
-    y: Math.min(y, window.innerHeight - menuHeight - 8),
-    nodeId
-  }
-}
-function closeContextMenu() { contextMenu.value.visible = false; shareMenuOpen.value = false }
-function openContextMenu(event, nodeId) { showContextMenu(event.clientX, event.clientY, nodeId) }
-function handleDeleteFromMenu() {
-  if (contextMenu.value.nodeId !== null) deleteMove(contextMenu.value.nodeId)
-  closeContextMenu()
-}
-function handleTouchStart(event, nodeId) {
-  longPressTriggered = false
-  longPressTimer = setTimeout(() => {
-    longPressTriggered = true
-    const touch = event.touches[0]
-    showContextMenu(touch.clientX, touch.clientY, nodeId)
-    if (navigator.vibrate) navigator.vibrate(10)
-  }, 500)
-}
-function cancelLongPress() { clearTimeout(longPressTimer) }
-function handleCellClick(nodeId) {
-  if (longPressTriggered) { longPressTriggered = false; return }
-  jumpToNode(nodeId)
-}
-
-function toggleShareMenu(event) {
-  if (event) event.stopPropagation()
-  shareMenuOpen.value = !shareMenuOpen.value
-}
-
-function ensureAudioCtx() {
-  if (!audioCtx) {
-    const Ctx = window.AudioContext || window.webkitAudioContext
-    audioCtx = new Ctx()
-  }
-  if (audioCtx.state === 'suspended') audioCtx.resume()
-  return audioCtx
-}
-function playSound(type) {
-  if (!soundOn.value) return
-  try {
-    const ctx = ensureAudioCtx()
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-    osc.connect(gain); gain.connect(ctx.destination)
-    const now = ctx.currentTime
-    const presets = {
-      move: { freq: 520, gain: 0.06, dur: 0.09 },
-      capture: { freq: 260, gain: 0.10, dur: 0.14 },
-      check: { freq: 880, gain: 0.10, dur: 0.20 },
-    }
-    const preset = presets[type] ?? presets.move
-    osc.type = type === 'capture' ? 'square' : 'sine'
-    osc.frequency.setValueAtTime(preset.freq, now)
-    gain.gain.setValueAtTime(preset.gain, now)
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + preset.dur)
-    osc.start(now); osc.stop(now + preset.dur + 0.02)
-  } catch (e) {}
-}
-function soundForLastMove(sanMove) {
-  if (chess.inCheck()) playSound('check')
-  else if (sanMove?.captured) playSound('capture')
-  else playSound('move')
-}
-
-watch(showBestArrow, (val) => {
-  if (!val && boardAPI.value) boardAPI.value.hideMoves()
-  else drawBestArrow()
-})
-watch(currentNode, () => { if (activeTab.value === 'explorer') importLichessExplorer() }, { immediate: true })
-watch(activeTab, (newTab) => { if (newTab === 'explorer') importLichessExplorer() })
-watch(explorerDb, () => { importLichessExplorer() })
-
-function showToast(message) {
-  toastMessage.value = message
-  clearTimeout(toastTimeout)
-  toastTimeout = setTimeout(() => { toastMessage.value = '' }, 1800)
-}
-async function copyToClipboard(text, label) {
-  try { await navigator.clipboard.writeText(text); showToast(`${label} copied to clipboard`) }
-  catch (e) { showToast(`Couldn't copy ${label.toLowerCase()}`) }
-}
-function copyPGN() { copyToClipboard(chess.pgn() || '(no moves yet)', 'PGN') }
-function copyFEN() { copyToClipboard(chess.fen(), 'FEN') }
-
-function drawBestArrow() {
-  if (!showBestArrow.value || !boardAPI.value || !bestArrowSquares.value) return
-
-  const { from, to } = bestArrowSquares.value
-
-  boardAPI.value.drawMove(from, to, 'blue')
-}
-
-async function onBoardCreated(api) {
-  boardAPI.value = api
-  chess.reset()
-  boardAPI.value.setPosition(chess.fen())
-  boardReady = true
-  await tryLoadImportedGame()
-}
-
-function handleBothMoves(move) {
-  if (isImporting.value) return
-
-  const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
-  let sanMove
-  try {
-    sanMove = chess.move({ from: move.from, to: move.to, promotion: move.promotion ?? undefined })
-  } catch (e) {
-    sanMove = null
-  }
-
-  if (!sanMove) {
-    boardAPI.value.setPosition(currentNode.value.fen)
-    return
-  }
-
-  soundForLastMove(sanMove)
-
-  const existing = currentNode.value.children.find(c => c.uci === uci)
-  if (existing) {
-    currentNode.value = existing
-  } else {
-    const newNode = {
-      id: nodeIdCounter++, san: sanMove.san, uci, fen: chess.fen(),
-      accuracy: null, analysisData: null, parent: currentNode.value, children: []
-    }
-    nodeMap[newNode.id] = newNode
-    currentNode.value.children.push(newNode)
-    currentNode.value = newNode
-    treeVersion.value++
-  }
-
-  movesListUCI.value.push(uci)
-  requestAnalysisForNewMove()
-}
-
-function undoMove() {
-  lastMoveSquare.value = null
-  lastMoveFromSquare.value = null
-  lastMoveAccuracy.value = null
-  if (currentNode.value.parent === null) return
-  chess.undo()
-  currentNode.value = currentNode.value.parent
-  movesListUCI.value.pop()
-  boardAPI.value.setPosition(chess.fen())
-}
-function redoMove() {
-  lastMoveSquare.value = null
-  lastMoveFromSquare.value = null
-  lastMoveAccuracy.value = null
-  if (currentNode.value.children.length === 0) return
-  const nextNode = currentNode.value.children[0]
-  let sanMove
-  try { sanMove = chess.move(nextNode.uci) } catch (e) { sanMove = null }
-  if (sanMove) soundForLastMove(sanMove)
-  movesListUCI.value.push(nextNode.uci)
-  currentNode.value = nextNode
-  boardAPI.value.setPosition(nextNode.fen)
-}
-function undoAccuracy() { undoMove(); getAccuracy() }
-function redoAccuracy() { redoMove(); getAccuracy() }
-
-function jumpToNode(nodeId) {
-  const node = nodeMap[nodeId]
-  if (!node || node === currentNode.value) return
-  const uciMoves = []
-  let current = node
-  while (current.parent !== null) { uciMoves.unshift(current.uci); current = current.parent }
-  chess.reset()
-  for (const uci of uciMoves) {
     try {
-      chess.move(uci)
-    } catch (e) {
-      console.warn("Failed to apply UCI in jumpToNode", uci, e)
+      const response = await fetch(url)
+
+      if (response.status === 204) {
+        markNodeOutOfBook(explorerDb.value)
+        const last = getLastOpening(currentNode.value)
+        if (last) {
+          opening.value = last.name
+          openingEco.value = last.eco
+        } else {
+          opening.value = `No ${explorerDb.value === 'masters' ? 'master' : 'player'} games at this position`
+          openingEco.value = ""
+        }
+        explorerStats.value = null
+        explorerMoves.value = []
+        explorerError.value = ""
+        return
+      }
+
+      if (!response.ok) {
+        explorerError.value = `Explorer error (${response.status})`
+        explorerStats.value = null
+        explorerMoves.value = []
+        return
+      }
+
+      const data = await response.json()
+
+      if (data.opening) {
+        opening.value = data.opening.name
+        openingEco.value = data.opening.eco
+        currentNode.value.lastOpening = {
+          name: data.opening.name,
+          eco: data.opening.eco
+        }
+      } else {
+        const last = getLastOpening(currentNode.value.parent)
+        if (last) {
+          opening.value = last.name
+          openingEco.value = last.eco
+        } else {
+          opening.value = uciList.length === 0 ? "Starting position" : "Out of book"
+          openingEco.value = ""
+        }
+      }
+
+      const total = (data.white ?? 0) + (data.draws ?? 0) + (data.black ?? 0)
+
+      if (total === 0 && uciList.length > 0) {
+        markNodeOutOfBook(explorerDb.value)
+      }
+
+      explorerStats.value = total > 0 ? {
+        white: Math.round((data.white / total) * 100),
+        draws: Math.round((data.draws / total) * 100),
+        black: Math.round((data.black / total) * 100),
+        total
+      } : null
+
+      explorerMoves.value = (data.moves ?? [])
+        .map(m => {
+          const moveTotal = (m.white ?? 0) + (m.draws ?? 0) + (m.black ?? 0)
+          return {
+            san: m.san, uci: m.uci, total: moveTotal,
+            percent: total > 0 ? Math.round((moveTotal / total) * 100) : 0,
+            white: moveTotal > 0 ? Math.round((m.white / moveTotal) * 100) : 0,
+            draws: moveTotal > 0 ? Math.round((m.draws / moveTotal) * 100) : 0,
+            black: moveTotal > 0 ? Math.round((m.black / moveTotal) * 100) : 0,
+          }
+        })
+        .sort((a, b) => b.total - a.total)
+
+      explorerError.value = ""
+    } catch (error) {
+      console.warn("Explorer fetch failed:", error)
+      explorerError.value = "No connection to explorer"
+      explorerStats.value = null
+      explorerMoves.value = []
+    } finally {
+      explorerLoading.value = false
     }
   }
-  movesListUCI.value = uciMoves
-  currentNode.value = node
-  boardAPI.value.setPosition(node.fen)
-  moveData.value = null
-  isAccuracy.value = " "
-  color.value = " "
-  getAccuracy()
-}
-function goToStart() { jumpToNode(0) }
-function goToEnd() {
-  let node = currentNode.value
-  while (node.children.length > 0) node = node.children[0]
-  jumpToNode(node.id)
-}
-function resetBoard() {
-  chess.reset()
-  boardAPI.value.setPosition(chess.fen())
-  movesListUCI.value = []
-  currentNode.value = moveTree
-  moveTree.children = []
-  moveTree.fen = chess.fen()
-  nodeIdCounter = 1
-  for (const key in nodeMap) if (parseInt(key) !== 0) delete nodeMap[key]
-  treeVersion.value++
-  getAccuracy()
-}
-function resetAccuracy() { resetBoard(); isAccuracy.value = " "; color.value = " "; moveData.value = null }
 
-async function getAccuracy() {
-  await cancelAnalysis()
+  function playExplorerMove(uci) {
+    if (isImporting.value) return
 
-  const cached = currentNode.value.analysisData
-  const requiresMultiPV3 = !isImporting.value && isEngineEnabled.value
-  const hasRequiredMultiPV = !requiresMultiPV3 || !currentNode.value.san || (cached?.topMoves?.length >= analysisMultiPV.value)
+    const result = applyUciMove(uci)
+    if (!result) return
 
-  const depthNeeded = isImporting.value
-    ? targetDepth.value
-    : Math.min(targetDepth.value, 20)
-
-  // If engine is OFF and we have cache, just show cache and return
-  if (!isImporting.value && !isEngineEnabled.value && cached) {
-    moveData.value = cached
-    lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
-    lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
-    lastMoveAccuracy.value = cached.move_accuracy
-    currentDepth.value = cached.depth
-    isAnalyzing.value = false
-    if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
-    evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
-    return
+    soundForLastMove(result)
+    boardAPI.value.setPosition(chess.fen())
+    requestAnalysisForNewMove()
   }
 
-  if (!isImporting.value && !isEngineEnabled.value && !cached) {
+  if (route.query.white || route.query.black) {
+    hasPlayerInfo.value = true
+    if (route.query.white) whiteName.value = route.query.white
+    if (route.query.black) blackName.value = route.query.black
+    if (route.query.whiteRating) whiteRating.value = route.query.whiteRating
+    if (route.query.blackRating) blackRating.value = route.query.blackRating
+  }
+
+  const isWhiteWinner = computed(() => gameResult.value === '1-0')
+  const isBlackWinner = computed(() => gameResult.value === '0-1')
+
+  const topPlayer = computed(() => {
+    const isWhite = isFlipped.value
+    return {
+      name: isWhite ? whiteName.value : blackName.value,
+      rating: isWhite ? whiteRating.value : blackRating.value,
+      side: isWhite ? 'white' : 'black',
+      isWinner: isWhite ? isWhiteWinner.value : isBlackWinner.value
+    }
+  })
+
+  const bottomPlayer = computed(() => {
+    const isWhite = !isFlipped.value
+    return {
+      name: isWhite ? whiteName.value : blackName.value,
+      rating: isWhite ? whiteRating.value : blackRating.value,
+      side: isWhite ? 'white' : 'black',
+      isWinner: isWhite ? isWhiteWinner.value : isBlackWinner.value
+    }
+  })
+
+  let longPressTimer = null
+  let longPressTriggered = false
+  let toastTimeout = null
+  let audioCtx = null
+  let lastPress = 0
+
+  const moveTree = {
+    id: 0, san: null, uci: null, fen: chess.fen(),
+    accuracy: null, analysisData: null, parent: null, children: []
+  }
+  let nodeIdCounter = 1
+  const nodeMap = { 0: moveTree }
+  const currentNode = shallowRef(moveTree)
+
+  const renderedMoves = computed(() => {
+    treeVersion.value
+    const rows = []
+    function makeCell(node, moveNum, showAsStart, depth) {
+      const isWhite = moveNum % 2 === 1
+      return {
+        key: `cell-${node.id}`, node,
+        displayNum: Math.ceil(moveNum / 2),
+        isWhite, showNum: isWhite || showAsStart, variant: depth > 0
+      }
+    }
+    function walk(startNode, moveNum, depth = 0, isStartOfLine = true) {
+      let current = startNode
+      let ply = moveNum
+      let firstRow = true
+      if (!current.san) {
+        if (current.children.length === 0) return
+        walk(current.children[0], ply, depth, isStartOfLine)
+        for (const variant of current.children.slice(1)) walk(variant, ply, depth + 1, true)
+        return
+      }
+      while (current) {
+        const mainReply = current.children[0] ?? null
+        rows.push({
+          key: `row-${current.id}`, depth,
+          cells: [
+            makeCell(current, ply, firstRow && isStartOfLine, depth),
+            mainReply ? makeCell(mainReply, ply + 1, false, depth) : null
+          ]
+        })
+        for (const variant of current.children.slice(1)) walk(variant, ply + 1, depth + 1, true)
+        if (mainReply) for (const variant of mainReply.children.slice(1)) walk(variant, ply + 2, depth + 1, true)
+        if (!mainReply) break
+        current = mainReply.children[0] ?? null
+        ply += 2
+        firstRow = false
+      }
+    }
+    walk(moveTree, 1)
+    return rows
+  })
+
+  function deleteMove(nodeId) {
+    const node = nodeMap[nodeId]
+    if (!node || node.parent === null) return
+    const parent = node.parent
+    const idx = parent.children.indexOf(node)
+    if (idx !== -1) parent.children.splice(idx, 1)
+    function collectIds(n, ids) { ids.push(n.id); for (const child of n.children) collectIds(child, ids); return ids }
+    const idsToRemove = collectIds(node, [])
+    const currentWasRemoved = idsToRemove.includes(currentNode.value.id)
+    for (const id of idsToRemove) delete nodeMap[id]
+    treeVersion.value++
+    if (currentWasRemoved) jumpToNode(parent.id)
+  }
+
+  function showContextMenu(x, y, nodeId) {
+    const menuWidth = 160, menuHeight = 44
+    contextMenu.value = {
+      visible: true,
+      x: Math.min(x, window.innerWidth - menuWidth - 8),
+      y: Math.min(y, window.innerHeight - menuHeight - 8),
+      nodeId
+    }
+  }
+  function closeContextMenu() { contextMenu.value.visible = false; shareMenuOpen.value = false }
+  function openContextMenu(event, nodeId) { showContextMenu(event.clientX, event.clientY, nodeId) }
+  function handleDeleteFromMenu() {
+    if (contextMenu.value.nodeId !== null) deleteMove(contextMenu.value.nodeId)
+    closeContextMenu()
+  }
+  function handleTouchStart(event, nodeId) {
+    longPressTriggered = false
+    longPressTimer = setTimeout(() => {
+      longPressTriggered = true
+      const touch = event.touches[0]
+      showContextMenu(touch.clientX, touch.clientY, nodeId)
+      if (navigator.vibrate) navigator.vibrate(10)
+    }, 500)
+  }
+  function cancelLongPress() { clearTimeout(longPressTimer) }
+  function handleCellClick(nodeId) {
+    if (longPressTriggered) { longPressTriggered = false; return }
+    jumpToNode(nodeId)
+  }
+
+  function toggleShareMenu(event) {
+    if (event) event.stopPropagation()
+    shareMenuOpen.value = !shareMenuOpen.value
+  }
+
+  function ensureAudioCtx() {
+    if (!audioCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext
+      audioCtx = new Ctx()
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    return audioCtx
+  }
+  function playSound(type) {
+    if (!soundOn.value) return
+    try {
+      const ctx = ensureAudioCtx()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain); gain.connect(ctx.destination)
+      const now = ctx.currentTime
+      const presets = {
+        move: { freq: 520, gain: 0.06, dur: 0.09 },
+        capture: { freq: 260, gain: 0.10, dur: 0.14 },
+        check: { freq: 880, gain: 0.10, dur: 0.20 },
+      }
+      const preset = presets[type] ?? presets.move
+      osc.type = type === 'capture' ? 'square' : 'sine'
+      osc.frequency.setValueAtTime(preset.freq, now)
+      gain.gain.setValueAtTime(preset.gain, now)
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + preset.dur)
+      osc.start(now); osc.stop(now + preset.dur + 0.02)
+    } catch (e) {}
+  }
+  function soundForLastMove(sanMove) {
+    if (chess.inCheck()) playSound('check')
+    else if (sanMove?.captured) playSound('capture')
+    else playSound('move')
+  }
+
+  watch(showBestArrow, (val) => {
+    if (!val && boardAPI.value) boardAPI.value.hideMoves()
+    else drawBestArrow()
+  })
+  watch(currentNode, () => { if (activeTab.value === 'explorer') importLichessExplorer() }, { immediate: true })
+  watch(activeTab, (newTab) => { if (newTab === 'explorer') importLichessExplorer() })
+  watch(explorerDb, () => { importLichessExplorer() })
+
+  function showToast(message) {
+    toastMessage.value = message
+    clearTimeout(toastTimeout)
+    toastTimeout = setTimeout(() => { toastMessage.value = '' }, 1800)
+  }
+  async function copyToClipboard(text, label) {
+    try { await navigator.clipboard.writeText(text); showToast(`${label} copied to clipboard`) }
+    catch (e) { showToast(`Couldn't copy ${label.toLowerCase()}`) }
+  }
+  function copyPGN() { copyToClipboard(chess.pgn() || '(no moves yet)', 'PGN') }
+  function copyFEN() { copyToClipboard(chess.fen(), 'FEN') }
+
+  function drawBestArrow() {
+    if (!showBestArrow.value || !boardAPI.value || !bestArrowSquares.value) return
+
+    const { from, to } = bestArrowSquares.value
+
+    boardAPI.value.drawMove(from, to, 'blue')
+  }
+
+  async function onBoardCreated(api) {
+    boardAPI.value = api
+    chess.reset()
+    boardAPI.value.setPosition(chess.fen())
+    boardReady = true
+    await tryLoadImportedGame()
+  }
+
+  function handleBothMoves(move) {
+    if (isImporting.value) return
+
+    const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
+    let sanMove
+    try {
+      sanMove = chess.move({ from: move.from, to: move.to, promotion: move.promotion ?? undefined })
+    } catch (e) {
+      sanMove = null
+    }
+
+    if (!sanMove) {
+      boardAPI.value.setPosition(currentNode.value.fen)
+      return
+    }
+
+    soundForLastMove(sanMove)
+
+    const existing = currentNode.value.children.find(c => c.uci === uci)
+    if (existing) {
+      currentNode.value = existing
+    } else {
+      const newNode = {
+        id: nodeIdCounter++, san: sanMove.san, uci, fen: chess.fen(),
+        accuracy: null, analysisData: null, parent: currentNode.value, children: []
+      }
+      nodeMap[newNode.id] = newNode
+      currentNode.value.children.push(newNode)
+      currentNode.value = newNode
+      treeVersion.value++
+    }
+
+    movesListUCI.value.push(uci)
+    requestAnalysisForNewMove()
+  }
+
+  function undoMove() {
+    lastMoveSquare.value = null
+    lastMoveFromSquare.value = null
+    lastMoveAccuracy.value = null
+    if (currentNode.value.parent === null) return
+    chess.undo()
+    currentNode.value = currentNode.value.parent
+    movesListUCI.value.pop()
+    boardAPI.value.setPosition(chess.fen())
+  }
+  function redoMove() {
+    lastMoveSquare.value = null
+    lastMoveFromSquare.value = null
+    lastMoveAccuracy.value = null
+    if (currentNode.value.children.length === 0) return
+    const nextNode = currentNode.value.children[0]
+    let sanMove
+    try { sanMove = chess.move(nextNode.uci) } catch (e) { sanMove = null }
+    if (sanMove) soundForLastMove(sanMove)
+    movesListUCI.value.push(nextNode.uci)
+    currentNode.value = nextNode
+    boardAPI.value.setPosition(nextNode.fen)
+  }
+  function undoAccuracy() { undoMove(); getAccuracy() }
+  function redoAccuracy() { redoMove(); getAccuracy() }
+
+  function jumpToNode(nodeId) {
+    const node = nodeMap[nodeId]
+    if (!node || node === currentNode.value) return
+    const uciMoves = []
+    let current = node
+    while (current.parent !== null) { uciMoves.unshift(current.uci); current = current.parent }
+    chess.reset()
+    for (const uci of uciMoves) {
+      try {
+        chess.move(uci)
+      } catch (e) {
+        console.warn("Failed to apply UCI in jumpToNode", uci, e)
+      }
+    }
+    movesListUCI.value = uciMoves
+    currentNode.value = node
+    boardAPI.value.setPosition(node.fen)
     moveData.value = null
     isAccuracy.value = " "
     color.value = " "
-    isAnalyzing.value = false
-    return
-  }
-
-  if (cached && cached.depth >= depthNeeded && hasRequiredMultiPV) {
-    moveData.value = cached
-    lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
-    lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
-    lastMoveAccuracy.value = cached.move_accuracy
-    currentDepth.value = cached.depth
-    isAnalyzing.value = false
-    if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
-    evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
-    return
-  }
-
-  if (cached && !hasRequiredMultiPV) {
-    moveData.value = cached
-    lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
-    lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
-    lastMoveAccuracy.value = cached.move_accuracy
-    currentDepth.value = cached.depth
-    evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
-  }
-
-  isAnalyzing.value = true
-  bestArrowSquares.value = null
-  if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
-
-  const beforeFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
-  const afterFen = currentNode.value.fen
-
-  const depthToUse = isImporting.value
-    ? targetDepth.value
-    : (isEngineEnabled.value ? Math.min(targetDepth.value, 20) : targetDepth.value)
-
-  const multiPVToUse = isImporting.value ? 1 : analysisMultiPV.value
-
-  await getEvaluation(
-    movesListUCI.value.length === 0 ? '' : movesListUCI.value.at(-1),
-    movesListUCI.value.slice(0, -1),
-    depthToUse,
-    (result) => {
-      moveData.value = result
-      lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
-      lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
-      lastMoveAccuracy.value = result.move_accuracy
-      currentNode.value.accuracy = result.move_accuracy
-      currentNode.value.analysisData = result
-      currentDepth.value = result.depth
-      isAnalyzing.value = result.depth < depthToUse
-      evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
-      if (!isImporting.value) treeVersion.value++
-    },
-    beforeFen, afterFen, moveTree.fen,
-    multiPVToUse
-  )
-
-  isAnalyzing.value = false
-}
-
-function onDepthChange() {
-  localStorage.setItem(DEPTH_STORAGE_KEY, String(targetDepth.value))
-  getAccuracy()
-}
-
-function formatEval(evalObj) {
-  if (chess.isGameOver()) {
-    if (chess.isCheckmate()) return chess.turn() === 'w' ? '0-1' : '1-0'
-    if (chess.isStalemate() || chess.isInsufficientMaterial() || chess.isThreefoldRepetition() || chess.isDraw()) return '1/2-1/2'
-  }
-  if (!evalObj) return " "
-  if (evalObj.type === "cp") return (evalObj.value / 100).toFixed(2)
-  if (evalObj.type === "mate") return `M${evalObj.value}`
-  return " "
-}
-function evalSize() {
-  if (!moveData.value || !moveData.value.eval) return
-  const evalValue = moveData.value.eval.value
-  const evalType = moveData.value.eval.type
-  if (evalType === "mate") {
-    if (evalValue >= 0) { cp.value = 800; height.value = 0 } else { cp.value = -800; height.value = 100 }
-    return
-  }
-  cp.value = Math.max(-800, Math.min(800, evalValue))
-  height.value = 50 - (cp.value / 800) * 50
-}
-function flipBoard() { boardAPI.value.toggleOrientation(); rotate.value += 180 }
-
-function accuracySymbol(acc) {
-  const map = {
-    brilliant: 'brilliant', best: 'best', excellent: 'excellent', good: 'good',
-    inaccuracy: 'inaccuracy', mistake: 'mistake', blunder: 'blunder', great: 'great', book: 'book'
-  }
-  return map[acc] ? `/moveClassifications/${map[acc]}.png` : undefined
-}
-function moveDescription() {
-  isAccuracy.value = ''
-  if (!currentNode.value.san) return
-  const descriptions = {
-    great: { color: '#4c8cb5', text: ' is a great move!' },
-    brilliant: { color: '#03aea7', text: ' is a brilliant move!!' },
-    book: { color: '#ad8760', text: ' is a book move' },
-    best: { color: '#6ad13f', text: ' is the best move' },
-    excellent: { color: '#90bc36', text: ' is an excellent move' },
-    good: { color: '#8eae83', text: ' is a good move' },
-    inaccuracy: { color: '#f2bc43', text: ' is an inaccuracy' },
-    mistake: { color: '#f38800', text: ' is a mistake' },
-    blunder: { color: '#FF0000', text: ' is a blunder' },
-  }
-  const config = descriptions[moveData.value.move_accuracy]
-  if (!config) return
-  color.value = config.color
-  isAccuracy.value = prettyMove(currentNode.value.san) + config.text
-}
-function displayBest() {
-  if (['brilliant', 'best', 'great', 'book'].includes(moveData.value.move_accuracy)) return " "
-  if (moveData.value.best_move === " ") return " "
-  return prettyMove(bestMoveSan.value) + " was the best "
-}
-function uciLine() {
-  sanLine.value = []
-  bestArrowSquares.value = null
-  if (!moveData.value?.best_line) return
-  let lineNum = 0
-  greedyChess.load(chess.fen())
-  for (let i = 0; i < 30; i++) {
-    const greedyMoveBefore = moveData.value.best_line[lineNum]
-    if (!greedyMoveBefore) break
-    const greedyMove = greedyChess.move(greedyMoveBefore, { sloppy: true })
-    if (!greedyMove) break
-    sanLine.value.push(greedyMove.san)
-    if (lineNum === 0) bestArrowSquares.value = { from: greedyMove.from, to: greedyMove.to }
-    lineNum++
-  }
-}
-function sanBest() {
-  if (!moveData.value?.best_move) return
-  const baseFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
-  bestChess.load(baseFen)
-  const bestMove = bestChess.move(moveData.value.best_move, { sloppy: true })
-  if (!bestMove) return
-  bestMoveSan.value = bestMove.san
-}
-function uciSecondLine() {
-  excellentSanLine.value = []
-  if (!moveData.value?.excellent_line) return
-  let secondLineNum = 0
-  excellentChess.load(chess.fen())
-  for (let i = 0; i < 30; i++) {
-    const m = moveData.value.excellent_line[secondLineNum]
-    if (!m) break
-    const mm = excellentChess.move(m, { sloppy: true })
-    if (!mm) break
-    excellentSanLine.value.push(mm.san)
-    secondLineNum++
-  }
-}
-function uciThirdLine() {
-  thirdSanLine.value = []
-  if (!moveData.value?.third_line) return
-  let thirdLineNum = 0
-  thirdChess.load(chess.fen())
-  for (let i = 0; i < 30; i++) {
-    const m = moveData.value.third_line[thirdLineNum]
-    if (!m) break
-    const mm = thirdChess.move(m, { sloppy: true })
-    if (!mm) break
-    thirdSanLine.value.push(mm.san)
-    thirdLineNum++
-  }
-}
-function prettyMove(move) {
-  const pieces = { 'K': '♚', 'Q': '♛', 'R': '♜', 'B': '♝', 'N': '♞' }
-  return move ? move.replace(/[KQRBN]/g, p => pieces[p]) : ''
-}
-function formatCount(num) {
-  if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(1) + 'B'
-  if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M'
-  if (num >= 10_000) return Math.round(num / 1000) + 'K'
-  return num.toLocaleString()
-}
-function squareStyle(square) {
-  if (!square) return {}
-  const file = square.charCodeAt(0) - 97
-  const rank = parseInt(square[1]) - 1
-  const flipped = (rotate.value / 180) % 2 === 1
-  const col = flipped ? 7 - file : file
-  const row = flipped ? rank : 7 - rank
-  return { position: 'absolute', left: `${(col + 1) * 12.5}%`, top: `${row * 12.5}%`, transform: 'translate(-70%, -35%)' }
-}
-
-async function playMove() {
-  if (!moveData.value?.best_move) return
-
-  const uci = moveData.value.best_move
-  const from = uci.slice(0, 2), to = uci.slice(2, 4)
-  const promotion = uci.length > 4 ? uci[4] : undefined
-
-  undoMove()
-
-  let sanMove
-  try {
-    sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
-  } catch (e) {
-    sanMove = null
-  }
-
-  if (!sanMove) return
-
-  soundForLastMove(sanMove)
-
-  const existing = currentNode.value.children.find(c => c.uci === uci)
-  if (existing) {
-    currentNode.value = existing
-  } else {
-    const newNode = {
-      id: nodeIdCounter++, san: sanMove.san, uci, fen: chess.fen(),
-      accuracy: null, analysisData: null, parent: currentNode.value, children: []
-    }
-    nodeMap[newNode.id] = newNode
-    currentNode.value.children.push(newNode)
-    currentNode.value = newNode
-  }
-
-  movesListUCI.value.push(uci)
-  boardAPI.value.setPosition(chess.fen())
-  treeVersion.value++
-  requestAnalysisForNewMove()
-}
-
-const handleKeyDown = (event) => {
-  const delay = 200
-  const currentTime = Date.now()
-  if (event.repeat) return
-  if (isImporting.value) return
-  switch (event.key) {
-    case 'ArrowLeft': if (currentTime - lastPress < delay) return; lastPress = currentTime; undoAccuracy(); break
-    case 'ArrowRight': if (currentTime - lastPress < delay) return; lastPress = currentTime; redoAccuracy(); break
-    case 'Home': event.preventDefault(); goToStart(); break
-    case 'End': event.preventDefault(); goToEnd(); break
-  }
-}
-
-function applyUciMove(uci) {
-  const from = uci.slice(0, 2)
-  let to = uci.slice(2, 4)
-  const promotion = uci.length > 4 ? uci[4] : undefined
-  const castlingFix = { 'e1h1': 'g1', 'e1a1': 'c1', 'e8h8': 'g8', 'e8a8': 'c8' }
-  if (castlingFix[uci]) to = castlingFix[uci]
-  let sanMove
-  try {
-    sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
-  } catch (e) {
-    console.warn('Move execution failed for', uci, e)
-    return false
-  }
-  if (!sanMove) return false
-  const normalizedUci = `${from}${to}${promotion ?? ''}`
-  const existing = currentNode.value.children.find(c => c.uci === normalizedUci)
-  if (existing) {
-    currentNode.value = existing
-  } else {
-    const newNode = {
-      id: nodeIdCounter++, san: sanMove.san, uci: normalizedUci, fen: chess.fen(),
-      accuracy: null, analysisData: null, parent: currentNode.value, children: []
-    }
-    nodeMap[newNode.id] = newNode
-    currentNode.value.children.push(newNode)
-    currentNode.value = newNode
-    if (!isImporting.value) treeVersion.value++
-  }
-  movesListUCI.value.push(normalizedUci)
-  return sanMove
-}
-
-function playLineMoves(uciList, count) {
-  if (!uciList || isImporting.value) return
-
-  let lastSanMove = null
-  for (let i = 0; i < count; i++) {
-    const uci = uciList[i]
-    if (!uci) break
-    const result = applyUciMove(uci)
-    if (!result) break
-    lastSanMove = result
-  }
-
-  if (lastSanMove) soundForLastMove(lastSanMove)
-
-  boardAPI.value.setPosition(chess.fen())
-  treeVersion.value++
-  requestAnalysisForNewMove()
-}
-
-async function loadFen(fen) {
-  chess.load(fen)
-  moveTree.fen = fen
-  currentNode.value = moveTree
-  if (boardAPI.value) boardAPI.value.setPosition(fen)
-}
-
-async function loadImportedGame(uciList) {
-  isImporting.value = true
-  importCancelled = false
-  importProgress.value = { current: 0, total: uciList.length }
-  isEngineEnabled.value = false
-
-  try {
-    for (const uci of uciList) {
-      if (importCancelled) break
-      const result = applyUciMove(uci)
-      if (!result) break
-      await getAccuracy()
-      importProgress.value.current++
-      boardAPI.value.setPosition(chess.fen())
-    }
-    if (!importCancelled) {
-      goToStart()
-      treeVersion.value++
-      await saveGameInsights()
-      activeTab.value = 'report'
-    }
-  } finally {
-    isImporting.value = false
-    isEngineEnabled.value = false
     getAccuracy()
   }
-}
-async function tryLoadImportedGame() {
-  if (boardReady && engineReady && route.query.moves) {
-    // Auto-rotate board based on the user's color
-    const myColor = route.query.myColor
-    if (myColor === 'black' && !isFlipped.value) {
-      flipBoard()
-    } else if (myColor === 'white' && isFlipped.value) {
-      flipBoard()
+  function goToStart() { jumpToNode(0) }
+  function goToEnd() {
+    let node = currentNode.value
+    while (node.children.length > 0) node = node.children[0]
+    jumpToNode(node.id)
+  }
+  function resetBoard() {
+    chess.reset()
+    boardAPI.value.setPosition(chess.fen())
+    movesListUCI.value = []
+    currentNode.value = moveTree
+    moveTree.children = []
+    moveTree.fen = chess.fen()
+    nodeIdCounter = 1
+    for (const key in nodeMap) if (parseInt(key) !== 0) delete nodeMap[key]
+    treeVersion.value++
+    getAccuracy()
+  }
+  function resetAccuracy() { resetBoard(); isAccuracy.value = " "; color.value = " "; moveData.value = null }
+
+  async function getAccuracy() {
+    await cancelAnalysis()
+
+    const cached = currentNode.value.analysisData
+    const requiresMultiPV3 = !isImporting.value && isEngineEnabled.value
+    const hasRequiredMultiPV = !requiresMultiPV3 || !currentNode.value.san || (cached?.topMoves?.length >= analysisMultiPV.value)
+
+    const depthNeeded = isImporting.value
+      ? targetDepth.value
+      : Math.min(targetDepth.value, 20)
+
+    // If engine is OFF and we have cache, just show cache and return
+    if (!isImporting.value && !isEngineEnabled.value && cached) {
+      moveData.value = cached
+      lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
+      lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
+      lastMoveAccuracy.value = cached.move_accuracy
+      currentDepth.value = cached.depth
+      isAnalyzing.value = false
+      if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
+      evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
+      return
     }
 
-    const importedUciList = route.query.moves.split('-')
-    await loadImportedGame(importedUciList)
-  }
-}
-
-async function cancelImport() {
-  importCancelled = true
-  await cancelAnalysis()
-  isImporting.value = false
-  resetAccuracy()
-  hasPlayerInfo.value = false
-  router.replace({ path: '/', query: {} })
-}
-
-const classificationOrder = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'blunder']
-const classificationMeta = {
-  brilliant: { label: 'Brilliant', color: '#03aea7' },
-  great: { label: 'Great', color: '#4c8cb5' },
-  best: { label: 'Best', color: '#6ad13f' },
-  excellent: { label: 'Excellent', color: '#90bc36' },
-  good: { label: 'Good', color: '#8eae83' },
-  book: { label: 'Book', color: '#ad8760' },
-  inaccuracy: { label: 'Inaccuracy', color: '#f2bc43' },
-  mistake: { label: 'Mistake', color: '#f38800' },
-  blunder: { label: 'Blunder', color: '#FF0000' }
-}
-const accuracyWeights = {
-  brilliant: 100, great: 100, best: 100, book: 100,
-  excellent: 90, good: 80, inaccuracy: 20, mistake: 10, blunder: 0
-}
-
-const gameReportStats = computed(() => {
-  treeVersion.value
-  function emptyCounts() { return classificationOrder.reduce((acc, key) => ({ ...acc, [key]: 0 }), {}) }
-  const white = { counts: emptyCounts(), weightedSum: 0, moveCount: 0 }
-  const black = { counts: emptyCounts(), weightedSum: 0, moveCount: 0 }
-  let current = moveTree.children[0] ?? null
-  let ply = 1
-  while (current) {
-    const side = ply % 2 === 1 ? white : black
-    if (current.accuracy && side.counts.hasOwnProperty(current.accuracy)) {
-      side.counts[current.accuracy]++
-      side.weightedSum += accuracyWeights[current.accuracy] ?? 0
-      side.moveCount++
+    if (!isImporting.value && !isEngineEnabled.value && !cached) {
+      moveData.value = null
+      isAccuracy.value = " "
+      color.value = " "
+      isAnalyzing.value = false
+      return
     }
-    current = current.children[0] ?? null
-    ply++
-  }
-  const finalize = (side) => ({ counts: side.counts, accuracy: side.moveCount > 0 ? (side.weightedSum / side.moveCount) : null })
-  return { white: finalize(white), black: finalize(black) }
-})
 
-const estimatedRatings = computed(() => {
-  const estimate = (accuracy) => {
-    if (accuracy === null) return null
-    if (accuracy >= 90) return Math.round(2000 + (accuracy - 90) * 50)
-    if (accuracy >= 70) return Math.round(1600 + (accuracy - 70) * 20)
-    return Math.round(900 + accuracy * 10)
-  }
-  return {
-    white: estimate(gameReportStats.value.white.accuracy),
-    black: estimate(gameReportStats.value.black.accuracy)
-  }
-})
-
-const importProgressPercent = computed(() => {
-  if (!importProgress.value.total) return 0
-  return Math.round((importProgress.value.current / importProgress.value.total) * 100)
-})
-
-const currentUserId = ref(null)
-let pendingGameMeta = null
-
-onMounted(() => {
-  onAuthStateChanged(auth, (user) => { if (user) currentUserId.value = user.uid })
-})
-
-watch(() => route.query, (newQuery) => {
-  if (newQuery.white || newQuery.black) {
-    pendingGameMeta = {
-      white: newQuery.white || 'White',
-      black: newQuery.black || 'Black',
-      pgn: newQuery.pgn || null,
-      myColor: newQuery.myColor || null
+    if (cached && cached.depth >= depthNeeded && hasRequiredMultiPV) {
+      moveData.value = cached
+      lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
+      lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
+      lastMoveAccuracy.value = cached.move_accuracy
+      currentDepth.value = cached.depth
+      isAnalyzing.value = false
+      if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
+      evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
+      return
     }
-  } else {
-    pendingGameMeta = null
-  }
-}, { immediate: true })
 
-function calculateMaterialBalance(fen) {
-  const parts = fen.split(' ')
-  const board = parts[0]
-  const values = { p: 1, n: 3, b: 3, r: 5, q: 9 }
-  let whiteMat = 0, blackMat = 0
-  for (const char of board) {
-    if (values[char.toLowerCase()]) {
-      if (char === char.toUpperCase()) whiteMat += values[char.toLowerCase()]
-      else blackMat += values[char.toLowerCase()]
+    if (cached && !hasRequiredMultiPV) {
+      moveData.value = cached
+      lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
+      lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
+      lastMoveAccuracy.value = cached.move_accuracy
+      currentDepth.value = cached.depth
+      evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
+    }
+
+    isAnalyzing.value = true
+    bestArrowSquares.value = null
+    if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
+
+    const beforeFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
+    const afterFen = currentNode.value.fen
+
+    const depthToUse = isImporting.value
+      ? targetDepth.value
+      : (isEngineEnabled.value ? Math.min(targetDepth.value, 20) : targetDepth.value)
+
+    const multiPVToUse = isImporting.value ? 1 : analysisMultiPV.value
+
+    await getEvaluation(
+      movesListUCI.value.length === 0 ? '' : movesListUCI.value.at(-1),
+      movesListUCI.value.slice(0, -1),
+      depthToUse,
+      (result) => {
+        moveData.value = result
+        lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
+        lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
+        lastMoveAccuracy.value = result.move_accuracy
+        currentNode.value.accuracy = result.move_accuracy
+        currentNode.value.analysisData = result
+        currentDepth.value = result.depth
+        isAnalyzing.value = result.depth < depthToUse
+        evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
+        if (!isImporting.value) treeVersion.value++
+      },
+      beforeFen, afterFen, moveTree.fen,
+      multiPVToUse
+    )
+
+    isAnalyzing.value = false
+  }
+
+  function onDepthChange() {
+    localStorage.setItem(DEPTH_STORAGE_KEY, String(targetDepth.value))
+    getAccuracy()
+  }
+
+  function formatEval(evalObj) {
+    if (chess.isGameOver()) {
+      if (chess.isCheckmate()) return chess.turn() === 'w' ? '0-1' : '1-0'
+      if (chess.isStalemate() || chess.isInsufficientMaterial() || chess.isThreefoldRepetition() || chess.isDraw()) return '1/2-1/2'
+    }
+    if (!evalObj) return " "
+    if (evalObj.type === "cp") return (evalObj.value / 100).toFixed(2)
+    if (evalObj.type === "mate") return `M${evalObj.value}`
+    return " "
+  }
+  function evalSize() {
+    if (!moveData.value || !moveData.value.eval) return
+    const evalValue = moveData.value.eval.value
+    const evalType = moveData.value.eval.type
+    if (evalType === "mate") {
+      if (evalValue >= 0) { cp.value = 800; height.value = 0 } else { cp.value = -800; height.value = 100 }
+      return
+    }
+    cp.value = Math.max(-800, Math.min(800, evalValue))
+    height.value = 50 - (cp.value / 800) * 50
+  }
+  function flipBoard() { boardAPI.value.toggleOrientation(); rotate.value += 180 }
+
+  function accuracySymbol(acc) {
+    const map = {
+      brilliant: 'brilliant', best: 'best', excellent: 'excellent', good: 'good',
+      inaccuracy: 'inaccuracy', mistake: 'mistake', blunder: 'blunder', great: 'great', book: 'book'
+    }
+    return map[acc] ? `/moveClassifications/${map[acc]}.png` : undefined
+  }
+  function moveDescription() {
+    isAccuracy.value = ''
+    if (!currentNode.value.san) return
+    const descriptions = {
+      great: { color: '#4c8cb5', text: ' is a great move!' },
+      brilliant: { color: '#03aea7', text: ' is a brilliant move!!' },
+      book: { color: '#ad8760', text: ' is a book move' },
+      best: { color: '#6ad13f', text: ' is the best move' },
+      excellent: { color: '#90bc36', text: ' is an excellent move' },
+      good: { color: '#8eae83', text: ' is a good move' },
+      inaccuracy: { color: '#f2bc43', text: ' is an inaccuracy' },
+      mistake: { color: '#f38800', text: ' is a mistake' },
+      blunder: { color: '#FF0000', text: ' is a blunder' },
+    }
+    const config = descriptions[moveData.value.move_accuracy]
+    if (!config) return
+    color.value = config.color
+    isAccuracy.value = prettyMove(currentNode.value.san) + config.text
+  }
+  function displayBest() {
+    if (['brilliant', 'best', 'great', 'book'].includes(moveData.value.move_accuracy)) return " "
+    if (moveData.value.best_move === " ") return " "
+    return prettyMove(bestMoveSan.value) + " was the best "
+  }
+  function uciLine() {
+    sanLine.value = []
+    bestArrowSquares.value = null
+    if (!moveData.value?.best_line) return
+    let lineNum = 0
+    greedyChess.load(chess.fen())
+    for (let i = 0; i < 30; i++) {
+      const greedyMoveBefore = moveData.value.best_line[lineNum]
+      if (!greedyMoveBefore) break
+      const greedyMove = greedyChess.move(greedyMoveBefore, { sloppy: true })
+      if (!greedyMove) break
+      sanLine.value.push(greedyMove.san)
+      if (lineNum === 0) bestArrowSquares.value = { from: greedyMove.from, to: greedyMove.to }
+      lineNum++
     }
   }
-  return { whiteMat, blackMat }
-}
-
-function getGamePhases(uciList) {
-  const c = new Chess()
-  let openingEndPly = 12
-  let endgameStartPly = Infinity
-  for (let i = 0; i < uciList.length; i++) {
-    c.move(uciList[i])
-    const fen = c.fen()
-    const { whiteMat, blackMat } = calculateMaterialBalance(fen)
-    if ((whiteMat < 14 && blackMat < 14) || (whiteMat < 10 || blackMat < 10)) {
-      if (i >= openingEndPly) { endgameStartPly = i + 1; break }
+  function sanBest() {
+    if (!moveData.value?.best_move) return
+    const baseFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
+    bestChess.load(baseFen)
+    const bestMove = bestChess.move(moveData.value.best_move, { sloppy: true })
+    if (!bestMove) return
+    bestMoveSan.value = bestMove.san
+  }
+  function uciSecondLine() {
+    excellentSanLine.value = []
+    if (!moveData.value?.excellent_line) return
+    let secondLineNum = 0
+    excellentChess.load(chess.fen())
+    for (let i = 0; i < 30; i++) {
+      const m = moveData.value.excellent_line[secondLineNum]
+      if (!m) break
+      const mm = excellentChess.move(m, { sloppy: true })
+      if (!mm) break
+      excellentSanLine.value.push(mm.san)
+      secondLineNum++
     }
   }
-  return {
-    opening: [0, Math.min(openingEndPly, uciList.length)],
-    middlegame: [openingEndPly, Math.min(endgameStartPly, uciList.length)],
-    endgame: [endgameStartPly, uciList.length]
-  }
-}
-
-function bucketLabel(moveNum) {
-  if (moveNum <= 10) return '1-10'
-  if (moveNum <= 20) return '11-20'
-  if (moveNum <= 30) return '21-30'
-  if (moveNum <= 40) return '31-40'
-  return '41+'
-}
-
-function resultForColor(color) {
-  if (gameResult.value === '1-0') return color === 'white' ? 'win' : 'lose'
-  if (gameResult.value === '0-1') return color === 'black' ? 'win' : 'lose'
-  if (gameResult.value === '1/2-1/2') return 'draw'
-  return 'unknown'
-}
-
-async function saveGameInsights() {
-  if (!currentUserId.value || !pendingGameMeta) return
-
-  const uciList = []
-  let curr = moveTree.children[0]
-  while (curr) { uciList.push(curr.uci); curr = curr.children[0] }
-  if (uciList.length === 0) return
-
-  const myColor = pendingGameMeta.myColor === 'black' ? 'black' : 'white'
-
-  const weights = { brilliant: 100, great: 100, best: 100, book: 100, excellent: 90, good: 80, inaccuracy: 20, mistake: 10, blunder: 0 }
-  const myCounts = { brilliant: 0, great: 0, best: 0, book: 0, excellent: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 }
-  let myWeightedSum = 0
-  let myMoveCount = 0
-  const moveBuckets = {}
-
-  let node = moveTree.children[0]
-  let ply = 1
-  while (node) {
-    const side = ply % 2 === 1 ? 'white' : 'black'
-    if (side === myColor && node.accuracy && myCounts.hasOwnProperty(node.accuracy)) {
-      const w = weights[node.accuracy] ?? 0
-      myCounts[node.accuracy]++
-      myWeightedSum += w
-      myMoveCount++
-      const label = bucketLabel(Math.ceil(ply / 2))
-      if (!moveBuckets[label]) moveBuckets[label] = { sum: 0, count: 0 }
-      moveBuckets[label].sum += w
-      moveBuckets[label].count++
+  function uciThirdLine() {
+    thirdSanLine.value = []
+    if (!moveData.value?.third_line) return
+    let thirdLineNum = 0
+    thirdChess.load(chess.fen())
+    for (let i = 0; i < 30; i++) {
+      const m = moveData.value.third_line[thirdLineNum]
+      if (!m) break
+      const mm = thirdChess.move(m, { sloppy: true })
+      if (!mm) break
+      thirdSanLine.value.push(mm.san)
+      thirdLineNum++
     }
-    node = node.children[0]
-    ply++
+  }
+  function prettyMove(move) {
+    const pieces = { 'K': '♚', 'Q': '♛', 'R': '♜', 'B': '♝', 'N': '♞' }
+    return move ? move.replace(/[KQRBN]/g, p => pieces[p]) : ''
+  }
+  function formatCount(num) {
+    if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(1) + 'B'
+    if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M'
+    if (num >= 10_000) return Math.round(num / 1000) + 'K'
+    return num.toLocaleString()
+  }
+  function squareStyle(square) {
+    if (!square) return {}
+    const file = square.charCodeAt(0) - 97
+    const rank = parseInt(square[1]) - 1
+    const flipped = (rotate.value / 180) % 2 === 1
+    const col = flipped ? 7 - file : file
+    const row = flipped ? rank : 7 - rank
+    return { position: 'absolute', left: `${(col + 1) * 12.5}%`, top: `${row * 12.5}%`, transform: 'translate(-70%, -35%)' }
   }
 
-  const overallAccuracy = myMoveCount > 0 ? (myWeightedSum / myMoveCount) : null
+  async function playMove() {
+    if (!moveData.value?.best_move) return
 
-  const phases = getGamePhases(uciList)
-  const phaseAccuracy = { opening: null, middlegame: null, endgame: null }
-  const phaseCounts = { opening: 0, middlegame: 0, endgame: 0 }
-  for (const [phase, [start, end]] of Object.entries(phases)) {
-    let phaseSum = 0
-    let phaseCount = 0
-    let n = moveTree.children[0]
-    let p = 1
-    while (n) {
-      const side = p % 2 === 1 ? 'white' : 'black'
-      if (p > start && p <= end && side === myColor && n.accuracy) {
-        phaseSum += weights[n.accuracy] ?? 0
-        phaseCount++
-      }
-      n = n.children[0]
-      p++
+    const uci = moveData.value.best_move
+    const from = uci.slice(0, 2), to = uci.slice(2, 4)
+    const promotion = uci.length > 4 ? uci[4] : undefined
+
+    undoMove()
+
+    let sanMove
+    try {
+      sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+    } catch (e) {
+      sanMove = null
     }
-    if (phaseCount > 0) phaseAccuracy[phase] = phaseSum / phaseCount
-    phaseCounts[phase] = phaseCount
-  }
 
-  const blunderSquares = {}
-  const goodSquares = {}
-  let trackNode = moveTree.children[0]
-  let trackPly = 1
-  while (trackNode) {
-    const side = trackPly % 2 === 1 ? 'white' : 'black'
-    if (side === myColor) {
-      const square = trackNode.uci.slice(2, 4)
-      if (trackNode.accuracy === 'blunder' || trackNode.accuracy === 'mistake') {
-        blunderSquares[square] = (blunderSquares[square] || 0) + 1
-      } else if (['brilliant', 'great', 'best', 'excellent'].includes(trackNode.accuracy)) {
-        goodSquares[square] = (goodSquares[square] || 0) + 1
-      }
-    }
-    trackNode = trackNode.children[0]
-    trackPly++
-  }
+    if (!sanMove) return
 
-  const pieceStats = { p: { count: 0, sum: 0 }, n: { count: 0, sum: 0 }, b: { count: 0, sum: 0 }, r: { count: 0, sum: 0 }, q: { count: 0, sum: 0 }, k: { count: 0, sum: 0 } }
-  let pieceNode = moveTree.children[0]
-  let piecePly = 1
-  while (pieceNode) {
-    const side = piecePly % 2 === 1 ? 'white' : 'black'
-    if (side === myColor && pieceNode.accuracy && pieceNode.san) {
-      let piece = 'p'
-      const firstChar = pieceNode.san[0]
-      if (['N', 'B', 'R', 'Q', 'K'].includes(firstChar)) piece = firstChar.toLowerCase()
-      pieceStats[piece].count++
-      pieceStats[piece].sum += weights[pieceNode.accuracy] ?? 0
-    }
-    pieceNode = pieceNode.children[0]
-    piecePly++
-  }
+    soundForLastMove(sanMove)
 
-  const toCp = (ev) => {
-    if (!ev) return null
-    if (ev.type === 'mate') return Math.sign(ev.value) * 10000
-    return ev.value
-  }
-  const fromMyPerspective = (cpv) => (myColor === 'white' ? cpv : -cpv)
-  const myMat = (fen) => {
-    const { whiteMat, blackMat } = calculateMaterialBalance(fen)
-    return myColor === 'white' ? whiteMat : blackMat
-  }
-
-  let checks = 0, captures = 0, sacrifices = 0
-  let inducedErrors = 0
-  let cpLost = 0, cpWon = 0
-  let bigSwingsFor = 0, bigSwingsAgainst = 0
-  let defendSum = 0, defendCount = 0
-  let attackSum = 0, attackCount = 0
-  let myLastMoveWasStrong = false
-
-  const STRONG = ['brilliant', 'great', 'best', 'excellent']
-  const ERROR_WEIGHT = { inaccuracy: 1, mistake: 2, blunder: 3 }
-
-  let prevNode = moveTree
-  let tNode = moveTree.children[0]
-  let tPly = 1
-  while (tNode) {
-    const side = tPly % 2 === 1 ? 'white' : 'black'
-    const isMine = side === myColor
-    const before = toCp(prevNode.analysisData?.eval)
-    const after = toCp(tNode.analysisData?.eval)
-    const delta = (before !== null && after !== null) ? fromMyPerspective(after) - fromMyPerspective(before) : null
-
-    if (isMine) {
-      if (tNode.san?.includes('+') || tNode.san?.includes('#')) checks++
-      if (tNode.san?.includes('x')) captures++
-      if (delta !== null) {
-        if (delta < 0) cpLost += Math.min(-delta, 1000)
-        if (delta <= -150) bigSwingsAgainst++
-        const w = weights[tNode.accuracy]
-        if (w !== undefined) {
-          const stance = fromMyPerspective(before)
-          if (stance <= -150) { defendSum += w; defendCount++ }
-          else if (stance >= 150) { attackSum += w; attackCount++ }
-        }
-      }
-      const reply = tNode.children[0] ?? null
-      const replyEval = reply ? toCp(reply.analysisData?.eval) : null
-      if (reply && before !== null && replyEval !== null) {
-        const materialLost = myMat(prevNode.fen) - myMat(reply.fen)
-        const windowDelta = fromMyPerspective(replyEval) - fromMyPerspective(before)
-        if (materialLost >= 2 && windowDelta >= -100) sacrifices++
-      }
-      myLastMoveWasStrong = STRONG.includes(tNode.accuracy)
+    const existing = currentNode.value.children.find(c => c.uci === uci)
+    if (existing) {
+      currentNode.value = existing
     } else {
-      if (delta !== null) {
-        if (delta > 0) cpWon += Math.min(delta, 1000)
-        if (delta >= 150) bigSwingsFor++
+      const newNode = {
+        id: nodeIdCounter++, san: sanMove.san, uci, fen: chess.fen(),
+        accuracy: null, analysisData: null, parent: currentNode.value, children: []
       }
-      if (myLastMoveWasStrong && ERROR_WEIGHT[tNode.accuracy]) inducedErrors += ERROR_WEIGHT[tNode.accuracy]
-      myLastMoveWasStrong = false
+      nodeMap[newNode.id] = newNode
+      currentNode.value.children.push(newNode)
+      currentNode.value = newNode
     }
-    prevNode = tNode
-    tNode = tNode.children[0] ?? null
-    tPly++
+
+    movesListUCI.value.push(uci)
+    boardAPI.value.setPosition(chess.fen())
+    treeVersion.value++
+    requestAnalysisForNewMove()
   }
 
-  let result = null
-  const resultMatch = (pendingGameMeta.pgn || '').match(/\[Result\s+"([^"]+)"\]/)
-  if (resultMatch) {
-    const r = resultMatch[1]
-    if (r === '1-0') result = myColor === 'white' ? 'win' : 'loss'
-    else if (r === '0-1') result = myColor === 'black' ? 'win' : 'loss'
-    else if (r === '1/2-1/2') result = 'draw'
+  const handleKeyDown = (event) => {
+    const delay = 200
+    const currentTime = Date.now()
+    if (event.repeat) return
+    if (isImporting.value) return
+    switch (event.key) {
+      case 'ArrowLeft': if (currentTime - lastPress < delay) return; lastPress = currentTime; undoAccuracy(); break
+      case 'ArrowRight': if (currentTime - lastPress < delay) return; lastPress = currentTime; redoAccuracy(); break
+      case 'Home': event.preventDefault(); goToStart(); break
+      case 'End': event.preventDefault(); goToEnd(); break
+    }
   }
 
-  const playstyle = {
-    v: 2,
-    myMoves: myMoveCount,
-    totalPlies: uciList.length,
-    checks, captures,
-    forcingMoves: checks + captures,
-    sacrifices, inducedErrors,
-    brilliantPlus: myCounts.brilliant + myCounts.great,
-    bookMoves: myCounts.book,
-    errors: { inaccuracy: myCounts.inaccuracy, mistake: myCounts.mistake, blunder: myCounts.blunder },
-    cpLost, cpWon, bigSwingsFor, bigSwingsAgainst,
-    defendSum, defendCount, attackSum, attackCount,
-    phaseCounts,
-    reachedEndgame: phases.endgame[0] < uciList.length ? 1 : 0,
-    result
+  function applyUciMove(uci) {
+    const from = uci.slice(0, 2)
+    let to = uci.slice(2, 4)
+    const promotion = uci.length > 4 ? uci[4] : undefined
+    const castlingFix = { 'e1h1': 'g1', 'e1a1': 'c1', 'e8h8': 'g8', 'e8a8': 'c8' }
+    if (castlingFix[uci]) to = castlingFix[uci]
+    let sanMove
+    try {
+      sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+    } catch (e) {
+      console.warn('Move execution failed for', uci, e)
+      return false
+    }
+    if (!sanMove) return false
+    const normalizedUci = `${from}${to}${promotion ?? ''}`
+    const existing = currentNode.value.children.find(c => c.uci === normalizedUci)
+    if (existing) {
+      currentNode.value = existing
+    } else {
+      const newNode = {
+        id: nodeIdCounter++, san: sanMove.san, uci: normalizedUci, fen: chess.fen(),
+        accuracy: null, analysisData: null, parent: currentNode.value, children: []
+      }
+      nodeMap[newNode.id] = newNode
+      currentNode.value.children.push(newNode)
+      currentNode.value = newNode
+      if (!isImporting.value) treeVersion.value++
+    }
+    movesListUCI.value.push(normalizedUci)
+    return sanMove
   }
 
-  const openingName = await fetchOpeningNameForSave(uciList)
+  function playLineMoves(uciList, count) {
+    if (!uciList || isImporting.value) return
 
-  const pgn = pendingGameMeta.pgn || chess.pgn()
-  function generatePgnHash(p) {
-    let hash = 0
-    for (let i = 0; i < p.length; i++) { hash = (hash << 5) - hash + p.charCodeAt(i); hash &= hash }
-    return String(hash)
+    let lastSanMove = null
+    for (let i = 0; i < count; i++) {
+      const uci = uciList[i]
+      if (!uci) break
+      const result = applyUciMove(uci)
+      if (!result) break
+      lastSanMove = result
+    }
+
+    if (lastSanMove) soundForLastMove(lastSanMove)
+
+    boardAPI.value.setPosition(chess.fen())
+    treeVersion.value++
+    requestAnalysisForNewMove()
   }
-  const pgnHash = generatePgnHash(pgn)
 
-  const extractedPuzzles = []
-  let pNode = moveTree.children[0]
-  let pPly = 1
-  while (pNode) {
-    const side = pPly % 2 === 1 ? 'white' : 'black'
-    if (side === myColor && (pNode.accuracy === 'blunder' || pNode.accuracy === 'mistake')) {
-      if (pNode.parent && pNode.analysisData?.best_move) {
-        const beforeEval = pNode.parent.analysisData?.eval
-        const afterEval = pNode.analysisData.eval
-        if (beforeEval && afterEval) {
-          const beforeCp = beforeEval.type === 'mate' ? Math.sign(beforeEval.value) * 10000 : beforeEval.value
-          const afterCp = afterEval.type === 'mate' ? Math.sign(afterEval.value) * 10000 : afterEval.value
-          let isPuzzleWorthy = false
-          if (side === 'white') {
-            if (beforeCp >= -300 && afterCp <= 300 && (beforeCp - afterCp >= 200)) isPuzzleWorthy = true
-          } else {
-            if (beforeCp <= 300 && afterCp >= -300 && (afterCp - beforeCp >= 200)) isPuzzleWorthy = true
+  async function loadFen(fen) {
+    chess.load(fen)
+    moveTree.fen = fen
+    currentNode.value = moveTree
+    if (boardAPI.value) boardAPI.value.setPosition(fen)
+  }
+
+  async function loadImportedGame(uciList) {
+    isImporting.value = true
+    importCancelled = false
+    importProgress.value = { current: 0, total: uciList.length }
+    isEngineEnabled.value = false
+
+    try {
+      for (const uci of uciList) {
+        if (importCancelled) break
+        const result = applyUciMove(uci)
+        if (!result) break
+        await getAccuracy()
+        importProgress.value.current++
+        boardAPI.value.setPosition(chess.fen())
+      }
+      if (!importCancelled) {
+        goToStart()
+        treeVersion.value++
+        await saveGameInsights()
+        activeTab.value = 'report'
+      }
+    } finally {
+      isImporting.value = false
+      isEngineEnabled.value = false
+      getAccuracy()
+    }
+  }
+  async function tryLoadImportedGame() {
+    if (boardReady && engineReady && route.query.moves) {
+      // Auto-rotate board based on the user's color
+      const myColor = route.query.myColor
+      if (myColor === 'black' && !isFlipped.value) {
+        flipBoard()
+      } else if (myColor === 'white' && isFlipped.value) {
+        flipBoard()
+      }
+
+      const importedUciList = route.query.moves.split('-')
+      await loadImportedGame(importedUciList)
+    }
+  }
+
+  async function cancelImport() {
+    importCancelled = true
+    await cancelAnalysis()
+    isImporting.value = false
+    resetAccuracy()
+    hasPlayerInfo.value = false
+    router.replace({ path: '/', query: {} })
+  }
+
+  const classificationOrder = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'blunder']
+  const classificationMeta = {
+    brilliant: { label: 'Brilliant', color: '#03aea7' },
+    great: { label: 'Great', color: '#4c8cb5' },
+    best: { label: 'Best', color: '#6ad13f' },
+    excellent: { label: 'Excellent', color: '#90bc36' },
+    good: { label: 'Good', color: '#8eae83' },
+    book: { label: 'Book', color: '#ad8760' },
+    inaccuracy: { label: 'Inaccuracy', color: '#f2bc43' },
+    mistake: { label: 'Mistake', color: '#f38800' },
+    blunder: { label: 'Blunder', color: '#FF0000' }
+  }
+  const accuracyWeights = {
+    brilliant: 100, great: 100, best: 100, book: 100,
+    excellent: 90, good: 80, inaccuracy: 20, mistake: 10, blunder: 0
+  }
+
+  const gameReportStats = computed(() => {
+    treeVersion.value
+    function emptyCounts() { return classificationOrder.reduce((acc, key) => ({ ...acc, [key]: 0 }), {}) }
+    const white = { counts: emptyCounts(), weightedSum: 0, moveCount: 0 }
+    const black = { counts: emptyCounts(), weightedSum: 0, moveCount: 0 }
+    let current = moveTree.children[0] ?? null
+    let ply = 1
+    while (current) {
+      const side = ply % 2 === 1 ? white : black
+      if (current.accuracy && side.counts.hasOwnProperty(current.accuracy)) {
+        side.counts[current.accuracy]++
+        side.weightedSum += accuracyWeights[current.accuracy] ?? 0
+        side.moveCount++
+      }
+      current = current.children[0] ?? null
+      ply++
+    }
+    const finalize = (side) => ({ counts: side.counts, accuracy: side.moveCount > 0 ? (side.weightedSum / side.moveCount) : null })
+    return { white: finalize(white), black: finalize(black) }
+  })
+
+  const estimatedRatings = computed(() => {
+    const estimate = (accuracy) => {
+      if (accuracy === null) return null
+      if (accuracy >= 90) return Math.round(2000 + (accuracy - 90) * 50)
+      if (accuracy >= 70) return Math.round(1600 + (accuracy - 70) * 20)
+      return Math.round(900 + accuracy * 10)
+    }
+    return {
+      white: estimate(gameReportStats.value.white.accuracy),
+      black: estimate(gameReportStats.value.black.accuracy)
+    }
+  })
+
+  const importProgressPercent = computed(() => {
+    if (!importProgress.value.total) return 0
+    return Math.round((importProgress.value.current / importProgress.value.total) * 100)
+  })
+
+  const currentUserId = ref(null)
+  let pendingGameMeta = null
+
+  onMounted(() => {
+    onAuthStateChanged(auth, (user) => { if (user) currentUserId.value = user.uid })
+  })
+
+  watch(() => route.query, (newQuery) => {
+    if (newQuery.white || newQuery.black) {
+      pendingGameMeta = {
+        white: newQuery.white || 'White',
+        black: newQuery.black || 'Black',
+        pgn: newQuery.pgn || null,
+        myColor: newQuery.myColor || null
+      }
+    } else {
+      pendingGameMeta = null
+    }
+  }, { immediate: true })
+
+  function calculateMaterialBalance(fen) {
+    const parts = fen.split(' ')
+    const board = parts[0]
+    const values = { p: 1, n: 3, b: 3, r: 5, q: 9 }
+    let whiteMat = 0, blackMat = 0
+    for (const char of board) {
+      if (values[char.toLowerCase()]) {
+        if (char === char.toUpperCase()) whiteMat += values[char.toLowerCase()]
+        else blackMat += values[char.toLowerCase()]
+      }
+    }
+    return { whiteMat, blackMat }
+  }
+
+  function getGamePhases(uciList) {
+    const c = new Chess()
+    let openingEndPly = 12
+    let endgameStartPly = Infinity
+    for (let i = 0; i < uciList.length; i++) {
+      c.move(uciList[i])
+      const fen = c.fen()
+      const { whiteMat, blackMat } = calculateMaterialBalance(fen)
+      if ((whiteMat < 14 && blackMat < 14) || (whiteMat < 10 || blackMat < 10)) {
+        if (i >= openingEndPly) { endgameStartPly = i + 1; break }
+      }
+    }
+    return {
+      opening: [0, Math.min(openingEndPly, uciList.length)],
+      middlegame: [openingEndPly, Math.min(endgameStartPly, uciList.length)],
+      endgame: [endgameStartPly, uciList.length]
+    }
+  }
+
+  function bucketLabel(moveNum) {
+    if (moveNum <= 10) return '1-10'
+    if (moveNum <= 20) return '11-20'
+    if (moveNum <= 30) return '21-30'
+    if (moveNum <= 40) return '31-40'
+    return '41+'
+  }
+
+  function resultForColor(color) {
+    if (gameResult.value === '1-0') return color === 'white' ? 'win' : 'lose'
+    if (gameResult.value === '0-1') return color === 'black' ? 'win' : 'lose'
+    if (gameResult.value === '1/2-1/2') return 'draw'
+    return 'unknown'
+  }
+
+  async function saveGameInsights() {
+    if (!currentUserId.value || !pendingGameMeta) return
+
+    const uciList = []
+    let curr = moveTree.children[0]
+    while (curr) { uciList.push(curr.uci); curr = curr.children[0] }
+    if (uciList.length === 0) return
+
+    const myColor = pendingGameMeta.myColor === 'black' ? 'black' : 'white'
+
+    const weights = { brilliant: 100, great: 100, best: 100, book: 100, excellent: 90, good: 80, inaccuracy: 20, mistake: 10, blunder: 0 }
+    const myCounts = { brilliant: 0, great: 0, best: 0, book: 0, excellent: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 }
+    let myWeightedSum = 0
+    let myMoveCount = 0
+    const moveBuckets = {}
+
+    let node = moveTree.children[0]
+    let ply = 1
+    while (node) {
+      const side = ply % 2 === 1 ? 'white' : 'black'
+      if (side === myColor && node.accuracy && myCounts.hasOwnProperty(node.accuracy)) {
+        const w = weights[node.accuracy] ?? 0
+        myCounts[node.accuracy]++
+        myWeightedSum += w
+        myMoveCount++
+        const label = bucketLabel(Math.ceil(ply / 2))
+        if (!moveBuckets[label]) moveBuckets[label] = { sum: 0, count: 0 }
+        moveBuckets[label].sum += w
+        moveBuckets[label].count++
+      }
+      node = node.children[0]
+      ply++
+    }
+
+    const overallAccuracy = myMoveCount > 0 ? (myWeightedSum / myMoveCount) : null
+
+    const phases = getGamePhases(uciList)
+    const phaseAccuracy = { opening: null, middlegame: null, endgame: null }
+    const phaseCounts = { opening: 0, middlegame: 0, endgame: 0 }
+    for (const [phase, [start, end]] of Object.entries(phases)) {
+      let phaseSum = 0
+      let phaseCount = 0
+      let n = moveTree.children[0]
+      let p = 1
+      while (n) {
+        const side = p % 2 === 1 ? 'white' : 'black'
+        if (p > start && p <= end && side === myColor && n.accuracy) {
+          phaseSum += weights[n.accuracy] ?? 0
+          phaseCount++
+        }
+        n = n.children[0]
+        p++
+      }
+      if (phaseCount > 0) phaseAccuracy[phase] = phaseSum / phaseCount
+      phaseCounts[phase] = phaseCount
+    }
+
+    const blunderSquares = {}
+    const goodSquares = {}
+    let trackNode = moveTree.children[0]
+    let trackPly = 1
+    while (trackNode) {
+      const side = trackPly % 2 === 1 ? 'white' : 'black'
+      if (side === myColor) {
+        const square = trackNode.uci.slice(2, 4)
+        if (trackNode.accuracy === 'blunder' || trackNode.accuracy === 'mistake') {
+          blunderSquares[square] = (blunderSquares[square] || 0) + 1
+        } else if (['brilliant', 'great', 'best', 'excellent'].includes(trackNode.accuracy)) {
+          goodSquares[square] = (goodSquares[square] || 0) + 1
+        }
+      }
+      trackNode = trackNode.children[0]
+      trackPly++
+    }
+
+    const pieceStats = { p: { count: 0, sum: 0 }, n: { count: 0, sum: 0 }, b: { count: 0, sum: 0 }, r: { count: 0, sum: 0 }, q: { count: 0, sum: 0 }, k: { count: 0, sum: 0 } }
+    let pieceNode = moveTree.children[0]
+    let piecePly = 1
+    while (pieceNode) {
+      const side = piecePly % 2 === 1 ? 'white' : 'black'
+      if (side === myColor && pieceNode.accuracy && pieceNode.san) {
+        let piece = 'p'
+        const firstChar = pieceNode.san[0]
+        if (['N', 'B', 'R', 'Q', 'K'].includes(firstChar)) piece = firstChar.toLowerCase()
+        pieceStats[piece].count++
+        pieceStats[piece].sum += weights[pieceNode.accuracy] ?? 0
+      }
+      pieceNode = pieceNode.children[0]
+      piecePly++
+    }
+
+    const toCp = (ev) => {
+      if (!ev) return null
+      if (ev.type === 'mate') return Math.sign(ev.value) * 10000
+      return ev.value
+    }
+    const fromMyPerspective = (cpv) => (myColor === 'white' ? cpv : -cpv)
+    const myMat = (fen) => {
+      const { whiteMat, blackMat } = calculateMaterialBalance(fen)
+      return myColor === 'white' ? whiteMat : blackMat
+    }
+
+    let checks = 0, captures = 0, sacrifices = 0
+    let inducedErrors = 0
+    let cpLost = 0, cpWon = 0
+    let bigSwingsFor = 0, bigSwingsAgainst = 0
+    let defendSum = 0, defendCount = 0
+    let attackSum = 0, attackCount = 0
+    let myLastMoveWasStrong = false
+
+    const STRONG = ['brilliant', 'great', 'best', 'excellent']
+    const ERROR_WEIGHT = { inaccuracy: 1, mistake: 2, blunder: 3 }
+
+    let prevNode = moveTree
+    let tNode = moveTree.children[0]
+    let tPly = 1
+    while (tNode) {
+      const side = tPly % 2 === 1 ? 'white' : 'black'
+      const isMine = side === myColor
+      const before = toCp(prevNode.analysisData?.eval)
+      const after = toCp(tNode.analysisData?.eval)
+      const delta = (before !== null && after !== null) ? fromMyPerspective(after) - fromMyPerspective(before) : null
+
+      if (isMine) {
+        if (tNode.san?.includes('+') || tNode.san?.includes('#')) checks++
+        if (tNode.san?.includes('x')) captures++
+        if (delta !== null) {
+          if (delta < 0) cpLost += Math.min(-delta, 1000)
+          if (delta <= -150) bigSwingsAgainst++
+          const w = weights[tNode.accuracy]
+          if (w !== undefined) {
+            const stance = fromMyPerspective(before)
+            if (stance <= -150) { defendSum += w; defendCount++ }
+            else if (stance >= 150) { attackSum += w; attackCount++ }
           }
-          if (isPuzzleWorthy) {
-            extractedPuzzles.push({
-              fen: pNode.parent.fen,
-              bestMove: pNode.analysisData.best_move,
-              playedMove: pNode.uci,
-              playedMoveAccuracy: pNode.accuracy,
-              turn: side,
-              eval: { type: afterEval.type, value: afterEval.value },
-              swing: Math.abs(beforeCp - afterCp),
-              continuation: Array.isArray(pNode.analysisData.best_line) ? pNode.analysisData.best_line.slice(0, 5) : [],
-              mateIn: beforeEval.type === 'mate' ? Math.abs(beforeEval.value) : null
-            })
+        }
+        const reply = tNode.children[0] ?? null
+        const replyEval = reply ? toCp(reply.analysisData?.eval) : null
+        if (reply && before !== null && replyEval !== null) {
+          const materialLost = myMat(prevNode.fen) - myMat(reply.fen)
+          const windowDelta = fromMyPerspective(replyEval) - fromMyPerspective(before)
+          if (materialLost >= 2 && windowDelta >= -100) sacrifices++
+        }
+        myLastMoveWasStrong = STRONG.includes(tNode.accuracy)
+      } else {
+        if (delta !== null) {
+          if (delta > 0) cpWon += Math.min(delta, 1000)
+          if (delta >= 150) bigSwingsFor++
+        }
+        if (myLastMoveWasStrong && ERROR_WEIGHT[tNode.accuracy]) inducedErrors += ERROR_WEIGHT[tNode.accuracy]
+        myLastMoveWasStrong = false
+      }
+      prevNode = tNode
+      tNode = tNode.children[0] ?? null
+      tPly++
+    }
+
+    let result = null
+    const resultMatch = (pendingGameMeta.pgn || '').match(/\[Result\s+"([^"]+)"\]/)
+    if (resultMatch) {
+      const r = resultMatch[1]
+      if (r === '1-0') result = myColor === 'white' ? 'win' : 'loss'
+      else if (r === '0-1') result = myColor === 'black' ? 'win' : 'loss'
+      else if (r === '1/2-1/2') result = 'draw'
+    }
+
+    const playstyle = {
+      v: 2,
+      myMoves: myMoveCount,
+      totalPlies: uciList.length,
+      checks, captures,
+      forcingMoves: checks + captures,
+      sacrifices, inducedErrors,
+      brilliantPlus: myCounts.brilliant + myCounts.great,
+      bookMoves: myCounts.book,
+      errors: { inaccuracy: myCounts.inaccuracy, mistake: myCounts.mistake, blunder: myCounts.blunder },
+      cpLost, cpWon, bigSwingsFor, bigSwingsAgainst,
+      defendSum, defendCount, attackSum, attackCount,
+      phaseCounts,
+      reachedEndgame: phases.endgame[0] < uciList.length ? 1 : 0,
+      result
+    }
+
+    const openingName = await fetchOpeningNameForSave(uciList)
+
+    const pgn = pendingGameMeta.pgn || chess.pgn()
+    function generatePgnHash(p) {
+      let hash = 0
+      for (let i = 0; i < p.length; i++) { hash = (hash << 5) - hash + p.charCodeAt(i); hash &= hash }
+      return String(hash)
+    }
+    const pgnHash = generatePgnHash(pgn)
+
+    const extractedPuzzles = []
+    let pNode = moveTree.children[0]
+    let pPly = 1
+    while (pNode) {
+      const side = pPly % 2 === 1 ? 'white' : 'black'
+      if (side === myColor && (pNode.accuracy === 'blunder' || pNode.accuracy === 'mistake')) {
+        if (pNode.parent && pNode.analysisData?.best_move) {
+          const beforeEval = pNode.parent.analysisData?.eval
+          const afterEval = pNode.analysisData.eval
+          if (beforeEval && afterEval) {
+            const beforeCp = beforeEval.type === 'mate' ? Math.sign(beforeEval.value) * 10000 : beforeEval.value
+            const afterCp = afterEval.type === 'mate' ? Math.sign(afterEval.value) * 10000 : afterEval.value
+            let isPuzzleWorthy = false
+            if (side === 'white') {
+              if (beforeCp >= -300 && afterCp <= 300 && (beforeCp - afterCp >= 200)) isPuzzleWorthy = true
+            } else {
+              if (beforeCp <= 300 && afterCp >= -300 && (afterCp - beforeCp >= 200)) isPuzzleWorthy = true
+            }
+            if (isPuzzleWorthy) {
+              extractedPuzzles.push({
+                fen: pNode.parent.fen,
+                bestMove: pNode.analysisData.best_move,
+                playedMove: pNode.uci,
+                playedMoveAccuracy: pNode.accuracy,
+                turn: side,
+                eval: { type: afterEval.type, value: afterEval.value },
+                swing: Math.abs(beforeCp - afterCp),
+                continuation: Array.isArray(pNode.analysisData.best_line) ? pNode.analysisData.best_line.slice(0, 5) : [],
+                mateIn: beforeEval.type === 'mate' ? Math.abs(beforeEval.value) : null
+              })
+            }
           }
         }
       }
+      pNode = pNode.children[0]
+      pPly++
     }
-    pNode = pNode.children[0]
-    pPly++
+
+    const whitePlayer = { username: whiteName.value || 'White', rating: whiteRating.value || 0, result: resultForColor('white') }
+    const blackPlayer = { username: blackName.value || 'Black', rating: blackRating.value || 0, result: resultForColor('black') }
+
+    const insightsPayload = {
+      myColor,
+      overallAccuracy,
+      phaseAccuracy,
+      moveCounts: myCounts,
+      totalMoves: myMoveCount,
+      opening: openingName,
+      blunderSquares,
+      goodSquares,
+      pieceStats,
+      playstyle,
+      moveBuckets
+    }
+
+    const gamesRef = collection(db, `users/${currentUserId.value}/games`)
+    const dupQ = query(gamesRef, where('pgnHash', '==', pgnHash))
+    const dupSnap = await getDocs(dupQ)
+
+    if (!dupSnap.empty) {
+      const gameDoc = dupSnap.docs[0]
+      const gameDocData = gameDoc.data()
+      const existingPuzzles = gameDocData.puzzles || []
+      const mergedPuzzles = extractedPuzzles.map(newP => {
+        const oldP = existingPuzzles.find(p => p.fen === newP.fen && p.bestMove === newP.bestMove)
+        return oldP ? {
+          ...newP,
+          solved: oldP.solved || false,
+          solvedAt: oldP.solvedAt ?? null,
+          reps: oldP.reps ?? 0,
+          dueAt: oldP.dueAt ?? null
+        } : newP
+      })
+      await updateDoc(doc(db, `users/${currentUserId.value}/games`, gameDoc.id), {
+        insights: insightsPayload,
+        puzzles: mergedPuzzles,
+        white: whitePlayer,
+        black: blackPlayer
+      })
+    } else {
+      await addDoc(gamesRef, {
+        pgn,
+        pgnHash,
+        white: whitePlayer,
+        black: blackPlayer,
+        time_class: 'unknown',
+        createdAt: serverTimestamp(),
+        insights: insightsPayload,
+        puzzles: extractedPuzzles
+      })
+    }
   }
 
-  const whitePlayer = { username: whiteName.value || 'White', rating: whiteRating.value || 0, result: resultForColor('white') }
-  const blackPlayer = { username: blackName.value || 'Black', rating: blackRating.value || 0, result: resultForColor('black') }
-
-  const insightsPayload = {
-    myColor,
-    overallAccuracy,
-    phaseAccuracy,
-    moveCounts: myCounts,
-    totalMoves: myMoveCount,
-    opening: openingName,
-    blunderSquares,
-    goodSquares,
-    pieceStats,
-    playstyle,
-    moveBuckets
+  async function fetchOpeningNameForSave(uciList) {
+    const OPENING_LOOKUP_PLIES = 12
+    const playList = uciList.slice(0, OPENING_LOOKUP_PLIES)
+    const bookList = playList.join(",")
+    const url = bookList
+      ? `../../api/explorer?db=masters&play=${encodeURIComponent(bookList)}`
+      : `../../api/explorer?db=masters`
+    try {
+      const response = await fetch(url)
+      if (!response.ok) return "Unknown Opening"
+      const data = await response.json()
+      return data.opening?.name || "Unknown Opening"
+    } catch (e) {
+      console.warn("Opening lookup for insights failed:", e)
+      return "Unknown Opening"
+    }
   }
-
-  const gamesRef = collection(db, `users/${currentUserId.value}/games`)
-  const dupQ = query(gamesRef, where('pgnHash', '==', pgnHash))
-  const dupSnap = await getDocs(dupQ)
-
-  if (!dupSnap.empty) {
-    const gameDoc = dupSnap.docs[0]
-    const gameDocData = gameDoc.data()
-    const existingPuzzles = gameDocData.puzzles || []
-    const mergedPuzzles = extractedPuzzles.map(newP => {
-      const oldP = existingPuzzles.find(p => p.fen === newP.fen && p.bestMove === newP.bestMove)
-      return oldP ? {
-        ...newP,
-        solved: oldP.solved || false,
-        solvedAt: oldP.solvedAt ?? null,
-        reps: oldP.reps ?? 0,
-        dueAt: oldP.dueAt ?? null
-      } : newP
-    })
-    await updateDoc(doc(db, `users/${currentUserId.value}/games`, gameDoc.id), {
-      insights: insightsPayload,
-      puzzles: mergedPuzzles,
-      white: whitePlayer,
-      black: blackPlayer
-    })
-  } else {
-    await addDoc(gamesRef, {
-      pgn,
-      pgnHash,
-      white: whitePlayer,
-      black: blackPlayer,
-      time_class: 'unknown',
-      createdAt: serverTimestamp(),
-      insights: insightsPayload,
-      puzzles: extractedPuzzles
-    })
-  }
-}
-
-async function fetchOpeningNameForSave(uciList) {
-  const OPENING_LOOKUP_PLIES = 12
-  const playList = uciList.slice(0, OPENING_LOOKUP_PLIES)
-  const bookList = playList.join(",")
-  const url = bookList
-    ? `../../api/explorer?db=masters&play=${encodeURIComponent(bookList)}`
-    : `../../api/explorer?db=masters`
-  try {
-    const response = await fetch(url)
-    if (!response.ok) return "Unknown Opening"
-    const data = await response.json()
-    return data.opening?.name || "Unknown Opening"
-  } catch (e) {
-    console.warn("Opening lookup for insights failed:", e)
-    return "Unknown Opening"
-  }
-}
 </script>
 
 <template>
@@ -3332,7 +3332,7 @@ async function fetchOpeningNameForSave(uciList) {
   }
 
   .evalbar.flipped .evalbar-inner {
-    flex-direction: row;
+    flex-direction: row-reverse;
   }
 
   .blackeval,
@@ -3351,8 +3351,8 @@ async function fetchOpeningNameForSave(uciList) {
 
   .evalnum {
     top: 50%;
-    left: auto;
-    right: 0.4rem;
+    left: 0.4rem;
+    right: auto;
     transform: translateY(-50%);
     font-size: 0.7rem;
     padding: 0.08rem 0.45rem;
