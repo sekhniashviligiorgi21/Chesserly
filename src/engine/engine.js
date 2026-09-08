@@ -471,17 +471,14 @@ function checkBrilliant({
     side_to_move,
     movesList,
     is_sacrifice,
-    uniquenessGap,
 }) {
     const moverIsWhite = side_to_move === 'w'
 
     if (best_move !== move) return false
     if (isBook) return false
 
-    if (!top_moves || top_moves.length < 2) return false
-    if (!top_moves[0]?.score || !top_moves[1]?.score) return false
-
-    if (uniquenessGap < 180) return false
+    if (!top_moves || top_moves.length < 1) return false
+    if (!top_moves[0]?.score) return false
 
     if (eval_before?.type !== 'cp') return false
     if (Math.abs(eval_before.value) >= 500) return false
@@ -552,12 +549,12 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, bef
         if (move) {
             if (isBook) {
                 accuracy = "book"
-            } else if (best_move === move && top_moves.length >= 2) {
+            } else if (best_move === move && top_moves.length >= 1) {
                 is_sacrifice = isSacrifice(beforeFen, afterFen, move)
 
                 const moverIsWhite = side_to_move === "w"
                 const bestCp   = scoreToCpComparable(top_moves[0]?.score)
-                const secondCp = scoreToCpComparable(top_moves[1]?.score)
+                const secondCp = top_moves[1] ? scoreToCpComparable(top_moves[1].score) : 0
                 const uniquenessGap = moverIsWhite
                     ? (bestCp - secondCp)
                     : (secondCp - bestCp)
@@ -572,7 +569,6 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, bef
                     side_to_move,
                     movesList,
                     is_sacrifice,
-                    uniquenessGap,
                 })
 
                 if (isBrilliant) {
@@ -584,7 +580,8 @@ export async function getEvaluation(move, movesList, depth, onUpdate = null, bef
                     const isSimpleRecapture = opponentLastMove && opponentLastMove.slice(2, 4) === move.slice(2, 4)
                     const isFreeCapture = isHangingCapture(beforeFen, move)
 
-                    if (uniquenessGap > 100 && !isSimpleRecapture && !isFreeCapture) {
+                    const hasSecondMove = top_moves.length >= 2 && !!top_moves[1]?.score
+                    if (hasSecondMove && uniquenessGap > 100 && !isSimpleRecapture && !isFreeCapture) {
                         accuracy = "great"
                     } else {
                         accuracy = "best"

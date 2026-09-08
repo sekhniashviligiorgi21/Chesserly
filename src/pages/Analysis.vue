@@ -90,12 +90,77 @@ const boardRef = ref(null)
 const movesListRef = ref(null)
 const thirdSanLine = ref([])
 const soundOn = ref(true)
-const showBestArrow = ref(true)
 const bestArrowSquares = ref(null)
 const toastMessage = ref('')
 const activeTab = ref('moves')
 const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
 const shareMenuOpen = ref(false)
+
+// --- Engine Toggle & MultiPV State ---
+const isEngineEnabled = ref(false)
+
+const BEST_ARROW_STORAGE_KEY = 'chesslab_showBestArrow'
+
+function loadStoredBestArrowSetting() {
+  const stored = localStorage.getItem(BEST_ARROW_STORAGE_KEY)
+
+  // Default to true if never saved
+  if (stored === null) return true
+
+  return stored === 'true'
+}
+
+const showBestArrow = ref(loadStoredBestArrowSetting())
+
+watch(showBestArrow, (enabled) => {
+  localStorage.setItem(BEST_ARROW_STORAGE_KEY, String(enabled))
+
+  if (!boardAPI.value) return
+
+  if (!enabled) {
+    boardAPI.value.hideMoves()
+  } else {
+    drawBestArrow()
+  }
+})
+
+function loadStoredMultiPV() {
+  const stored = Number(localStorage.getItem('chesslab_multiPV'))
+  if (stored >= 1 && stored <= 3) return stored
+  localStorage.setItem('chesslab_multiPV', '3')
+  return 3
+}
+
+function handleBoardClick() {
+  // When the user clicks the board, chessground's default behavior is to clear 
+  // ALL drawings (both user-drawn and app-drawn). 
+  // By redrawing the app arrow immediately after the click, we make it persistent,
+  // while user-drawn arrows remain erased.
+  nextTick(() => {
+    drawBestArrow()
+  })
+}
+
+const analysisMultiPV = ref(loadStoredMultiPV())
+
+watch(analysisMultiPV, (val) => {
+  localStorage.setItem('chesslab_multiPV', String(val))
+  if (isEngineEnabled.value) getAccuracy()
+})
+
+watch(isEngineEnabled, () => {
+  getAccuracy()
+})
+
+function requestAnalysisForNewMove() {
+  if (isImporting.value) return
+
+  if (!isEngineEnabled.value) {
+    isEngineEnabled.value = true
+  } else {
+    getAccuracy()
+  }
+}
 
 const whiteName = ref('White')
 const blackName = ref('Black')
@@ -118,8 +183,6 @@ const explorerLoading = ref(false)
 const explorerError = ref("")
 const explorerDb = ref('masters')
 
-// Accuracy classification colors, reused both for the move-description text
-// and for the CSS variable that tints the actual chessground last-move squares.
 const accuracyColors = {
   brilliant: '#03aea7', great: '#4c8cb5', best: '#6ad13f', excellent: '#90bc36',
   good: '#8eae83', book: '#ad8760', inaccuracy: '#f2bc43', mistake: '#f38800', blunder: '#FF0000'
@@ -133,10 +196,6 @@ const lastMoveHighlightColor = computed(() => {
   return c ? hexToRgba(c, 0.35) : null
 })
 
-// Keep chessground's own last-move squares in sync with our from/to state.
-// We drive the board via setPosition() rather than its internal move engine,
-// so chessground won't know the last move on its own — setConfig({ lastMove }) is the
-// supported way to tell it which real board squares to highlight.
 watch([lastMoveFromSquare, lastMoveSquare], ([from, to]) => {
   if (!boardAPI.value) return
   boardAPI.value.setConfig({ lastMove: from && to ? [from, to] : undefined })
@@ -237,13 +296,11 @@ async function importLichessExplorer() {
     if (data.opening) {
       opening.value = data.opening.name
       openingEco.value = data.opening.eco
-      // Persist the opening on this node so descendants that go out of book can recall it
       currentNode.value.lastOpening = {
         name: data.opening.name,
         eco: data.opening.eco
       }
     } else {
-      // No opening classified for this position - fall back to the most recent known opening
       const last = getLastOpening(currentNode.value.parent)
       if (last) {
         opening.value = last.name
@@ -290,12 +347,16 @@ async function importLichessExplorer() {
     explorerLoading.value = false
   }
 }
+
 function playExplorerMove(uci) {
+  if (isImporting.value) return
+
   const result = applyUciMove(uci)
   if (!result) return
+
   soundForLastMove(result)
   boardAPI.value.setPosition(chess.fen())
-  getAccuracy()
+  requestAnalysisForNewMove()
 }
 
 if (route.query.white || route.query.black) {
@@ -491,8 +552,10 @@ function copyFEN() { copyToClipboard(chess.fen(), 'FEN') }
 
 function drawBestArrow() {
   if (!showBestArrow.value || !boardAPI.value || !bestArrowSquares.value) return
+
   const { from, to } = bestArrowSquares.value
-  boardAPI.value.drawMove(from, to, 'green')
+
+  boardAPI.value.drawMove(from, to, 'blue')
 }
 
 async function onBoardCreated(api) {
@@ -503,16 +566,28 @@ async function onBoardCreated(api) {
   await tryLoadImportedGame()
 }
 
-async function handleBothMoves(move) {
+function handleBothMoves(move) {
+  if (isImporting.value) return
+
   const uci = move.promotion ? `${move.from}${move.to}${move.promotion}` : `${move.from}${move.to}`
   let sanMove
-  try { sanMove = chess.move({ from: move.from, to: move.to, promotion: move.promotion ?? undefined }) }
-  catch (e) { sanMove = null }
-  if (!sanMove) { boardAPI.value.setPosition(currentNode.value.fen); return }
+  try {
+    sanMove = chess.move({ from: move.from, to: move.to, promotion: move.promotion ?? undefined })
+  } catch (e) {
+    sanMove = null
+  }
+
+  if (!sanMove) {
+    boardAPI.value.setPosition(currentNode.value.fen)
+    return
+  }
+
   soundForLastMove(sanMove)
+
   const existing = currentNode.value.children.find(c => c.uci === uci)
-  if (existing) { currentNode.value = existing }
-  else {
+  if (existing) {
+    currentNode.value = existing
+  } else {
     const newNode = {
       id: nodeIdCounter++, san: sanMove.san, uci, fen: chess.fen(),
       accuracy: null, analysisData: null, parent: currentNode.value, children: []
@@ -522,8 +597,9 @@ async function handleBothMoves(move) {
     currentNode.value = newNode
     treeVersion.value++
   }
+
   movesListUCI.value.push(uci)
-  await getAccuracy()
+  requestAnalysisForNewMove()
 }
 
 function undoMove() {
@@ -559,7 +635,13 @@ function jumpToNode(nodeId) {
   let current = node
   while (current.parent !== null) { uciMoves.unshift(current.uci); current = current.parent }
   chess.reset()
-  for (const uci of uciMoves) { try { chess.move(uci) } catch (e) { console.warn("Failed to apply UCI in jumpToNode", uci, e) } }
+  for (const uci of uciMoves) {
+    try {
+      chess.move(uci)
+    } catch (e) {
+      console.warn("Failed to apply UCI in jumpToNode", uci, e)
+    }
+  }
   movesListUCI.value = uciMoves
   currentNode.value = node
   boardAPI.value.setPosition(node.fen)
@@ -590,11 +672,17 @@ function resetAccuracy() { resetBoard(); isAccuracy.value = " "; color.value = "
 
 async function getAccuracy() {
   await cancelAnalysis()
-  const cached = currentNode.value.analysisData
-  const requiresMultiPV3 = !isImporting.value
-  const hasRequiredMultiPV = !requiresMultiPV3 || !currentNode.value.san || (cached?.topMoves?.length >= 3)
 
-  if (cached && cached.depth >= targetDepth.value && hasRequiredMultiPV) {
+  const cached = currentNode.value.analysisData
+  const requiresMultiPV3 = !isImporting.value && isEngineEnabled.value
+  const hasRequiredMultiPV = !requiresMultiPV3 || !currentNode.value.san || (cached?.topMoves?.length >= analysisMultiPV.value)
+
+  const depthNeeded = isImporting.value
+    ? targetDepth.value
+    : Math.min(targetDepth.value, 20)
+
+  // If engine is OFF and we have cache, just show cache and return
+  if (!isImporting.value && !isEngineEnabled.value && cached) {
     moveData.value = cached
     lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
     lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
@@ -605,6 +693,27 @@ async function getAccuracy() {
     evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
     return
   }
+
+  if (!isImporting.value && !isEngineEnabled.value && !cached) {
+    moveData.value = null
+    isAccuracy.value = " "
+    color.value = " "
+    isAnalyzing.value = false
+    return
+  }
+
+  if (cached && cached.depth >= depthNeeded && hasRequiredMultiPV) {
+    moveData.value = cached
+    lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
+    lastMoveFromSquare.value = movesListUCI.value.at(-1)?.slice(0, 2) ?? null
+    lastMoveAccuracy.value = cached.move_accuracy
+    currentDepth.value = cached.depth
+    isAnalyzing.value = false
+    if (showBestArrow.value && boardAPI.value) boardAPI.value.hideMoves()
+    evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
+    return
+  }
+
   if (cached && !hasRequiredMultiPV) {
     moveData.value = cached
     lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
@@ -621,10 +730,16 @@ async function getAccuracy() {
   const beforeFen = currentNode.value.parent ? currentNode.value.parent.fen : moveTree.fen
   const afterFen = currentNode.value.fen
 
+  const depthToUse = isImporting.value
+    ? targetDepth.value
+    : (isEngineEnabled.value ? Math.min(targetDepth.value, 20) : targetDepth.value)
+
+  const multiPVToUse = isImporting.value ? 1 : analysisMultiPV.value
+
   await getEvaluation(
     movesListUCI.value.length === 0 ? '' : movesListUCI.value.at(-1),
     movesListUCI.value.slice(0, -1),
-    targetDepth.value,
+    depthToUse,
     (result) => {
       moveData.value = result
       lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
@@ -633,16 +748,21 @@ async function getAccuracy() {
       currentNode.value.accuracy = result.move_accuracy
       currentNode.value.analysisData = result
       currentDepth.value = result.depth
-      isAnalyzing.value = false
+      isAnalyzing.value = result.depth < depthToUse
       evalSize(); moveDescription(); sanBest(); uciSecondLine(); uciThirdLine(); uciLine(); drawBestArrow()
       if (!isImporting.value) treeVersion.value++
     },
     beforeFen, afterFen, moveTree.fen,
-    isImporting.value ? 1 : 3
+    multiPVToUse
   )
+
+  isAnalyzing.value = false
 }
 
-function onDepthChange() { localStorage.setItem(DEPTH_STORAGE_KEY, String(targetDepth.value)); getAccuracy() }
+function onDepthChange() {
+  localStorage.setItem(DEPTH_STORAGE_KEY, String(targetDepth.value))
+  getAccuracy()
+}
 
 function formatEval(evalObj) {
   if (chess.isGameOver()) {
@@ -772,17 +892,28 @@ function squareStyle(square) {
 
 async function playMove() {
   if (!moveData.value?.best_move) return
+
   const uci = moveData.value.best_move
   const from = uci.slice(0, 2), to = uci.slice(2, 4)
   const promotion = uci.length > 4 ? uci[4] : undefined
+
   undoMove()
+
   let sanMove
-  try { sanMove = chess.move({ from, to, promotion: promotion ?? undefined }) } catch (e) { sanMove = null }
+  try {
+    sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+  } catch (e) {
+    sanMove = null
+  }
+
   if (!sanMove) return
+
   soundForLastMove(sanMove)
+
   const existing = currentNode.value.children.find(c => c.uci === uci)
-  if (existing) { currentNode.value = existing }
-  else {
+  if (existing) {
+    currentNode.value = existing
+  } else {
     const newNode = {
       id: nodeIdCounter++, san: sanMove.san, uci, fen: chess.fen(),
       accuracy: null, analysisData: null, parent: currentNode.value, children: []
@@ -791,10 +922,11 @@ async function playMove() {
     currentNode.value.children.push(newNode)
     currentNode.value = newNode
   }
+
   movesListUCI.value.push(uci)
   boardAPI.value.setPosition(chess.fen())
   treeVersion.value++
-  getAccuracy()
+  requestAnalysisForNewMove()
 }
 
 const handleKeyDown = (event) => {
@@ -817,8 +949,12 @@ function applyUciMove(uci) {
   const castlingFix = { 'e1h1': 'g1', 'e1a1': 'c1', 'e8h8': 'g8', 'e8a8': 'c8' }
   if (castlingFix[uci]) to = castlingFix[uci]
   let sanMove
-  try { sanMove = chess.move({ from, to, promotion: promotion ?? undefined }) }
-  catch (e) { console.warn('Move execution failed for', uci, e); return false }
+  try {
+    sanMove = chess.move({ from, to, promotion: promotion ?? undefined })
+  } catch (e) {
+    console.warn('Move execution failed for', uci, e)
+    return false
+  }
   if (!sanMove) return false
   const normalizedUci = `${from}${to}${promotion ?? ''}`
   const existing = currentNode.value.children.find(c => c.uci === normalizedUci)
@@ -831,7 +967,7 @@ function applyUciMove(uci) {
     }
     nodeMap[newNode.id] = newNode
     currentNode.value.children.push(newNode)
-    currentNode.value = newNode          // <-- RESTORE THIS LINE
+    currentNode.value = newNode
     if (!isImporting.value) treeVersion.value++
   }
   movesListUCI.value.push(normalizedUci)
@@ -839,7 +975,8 @@ function applyUciMove(uci) {
 }
 
 function playLineMoves(uciList, count) {
-  if (!uciList) return
+  if (!uciList || isImporting.value) return
+
   let lastSanMove = null
   for (let i = 0; i < count; i++) {
     const uci = uciList[i]
@@ -848,10 +985,12 @@ function playLineMoves(uciList, count) {
     if (!result) break
     lastSanMove = result
   }
+
   if (lastSanMove) soundForLastMove(lastSanMove)
+
   boardAPI.value.setPosition(chess.fen())
   treeVersion.value++
-  getAccuracy()
+  requestAnalysisForNewMove()
 }
 
 async function loadFen(fen) {
@@ -865,6 +1004,8 @@ async function loadImportedGame(uciList) {
   isImporting.value = true
   importCancelled = false
   importProgress.value = { current: 0, total: uciList.length }
+  isEngineEnabled.value = false
+
   try {
     for (const uci of uciList) {
       if (importCancelled) break
@@ -882,15 +1023,25 @@ async function loadImportedGame(uciList) {
     }
   } finally {
     isImporting.value = false
+    isEngineEnabled.value = false
     getAccuracy()
   }
 }
 async function tryLoadImportedGame() {
   if (boardReady && engineReady && route.query.moves) {
+    // Auto-rotate board based on the user's color
+    const myColor = route.query.myColor
+    if (myColor === 'black' && !isFlipped.value) {
+      flipBoard()
+    } else if (myColor === 'white' && isFlipped.value) {
+      flipBoard()
+    }
+
     const importedUciList = route.query.moves.split('-')
     await loadImportedGame(importedUciList)
   }
 }
+
 async function cancelImport() {
   importCancelled = true
   await cancelAnalysis()
@@ -1338,6 +1489,7 @@ async function fetchOpeningNameForSave(uciList) {
     v-model:boardTheme="currentTheme"
     @depthChanged="onDepthChange"
   />
+
   <Transition name="loading-fade">
     <div v-if="isImporting" class="analysis-loading-overlay">
       <div class="loading-content">
@@ -1359,16 +1511,19 @@ async function fetchOpeningNameForSave(uciList) {
       </div>
     </div>
   </Transition>
+
   <div class="grid-layout">
     <Title class="title-slot" />
+
     <div class="board-area">
-      <div class="board-wrapper" ref="boardRef" :style="{ '--last-move-highlight': lastMoveHighlightColor }">
+      <div class="board-wrapper" ref="boardRef" :style="{ '--last-move-highlight': lastMoveHighlightColor}" @click="handleBoardClick">
         <div class="player-bar" v-if="hasPlayerInfo">
           <span class="player-color-dot" :class="topPlayer.side"></span>
           <span class="player-name">{{ topPlayer.name }}</span>
           <span v-if="topPlayer.isWinner" class="winner-crown">👑</span>
           <span class="player-rating" v-if="topPlayer.rating">{{ topPlayer.rating }}</span>
         </div>
+
         <div class="board-row">
           <div class="board-col">
             <TheChessboard
@@ -1377,8 +1532,14 @@ async function fetchOpeningNameForSave(uciList) {
               @board-created="onBoardCreated"
               :board-config="{ coordinates: true, animation: { enabled: false } }"
             />
-            <img v-if="lastMoveSquare && lastMoveAccuracy" :src="accuracySymbol(lastMoveAccuracy)" class="board-acc-icon" :style="squareStyle(lastMoveSquare)" />
+            <img
+              v-if="lastMoveSquare && lastMoveAccuracy"
+              :src="accuracySymbol(lastMoveAccuracy)"
+              class="board-acc-icon"
+              :style="squareStyle(lastMoveSquare)"
+            />
           </div>
+
           <div class="evalbar" :class="{ flipped: isFlipped }" :style="{ '--eval': height + '%' }">
             <div class="evalbar-inner">
               <div class="blackeval"></div>
@@ -1387,14 +1548,15 @@ async function fetchOpeningNameForSave(uciList) {
             <p class="evalnum">{{ formatEval(moveData?.eval) }}</p>
           </div>
         </div>
+
         <div class="player-bar bottom" v-if="hasPlayerInfo">
           <span class="player-color-dot" :class="bottomPlayer.side"></span>
           <span class="player-name">{{ bottomPlayer.name }}</span>
           <span v-if="bottomPlayer.isWinner" class="winner-crown">👑</span>
           <span class="player-rating" v-if="bottomPlayer.rating">{{ bottomPlayer.rating }}</span>
         </div>
+
         <div class="boardtools">
-          <button class="toolbar-icon-btn settings-toggle" @click="isSettingsOpen = true" title="Settings">⚙️</button>
           <div class="boardtools-nav">
             <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start">&lt;&lt;</button>
             <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null">&lt;-</button>
@@ -1402,6 +1564,7 @@ async function fetchOpeningNameForSave(uciList) {
             <button class="redo" title="next" @click="redoAccuracy" :disabled="isImporting || currentNode.children.length === 0">-&gt;</button>
             <button class="jumpend" @click="goToEnd" :disabled="isImporting || currentNode.children.length === 0">&gt;&gt;</button>
           </div>
+
           <div class="share-menu-wrap">
             <button class="toolbar-icon-btn" @click="toggleShareMenu" title="Copy game">📋</button>
             <div v-if="shareMenuOpen" class="share-menu">
@@ -1412,35 +1575,116 @@ async function fetchOpeningNameForSave(uciList) {
         </div>
       </div>
     </div>
+
     <div class="analysis-container">
-      <div class="analyze">
+      <div class="analyze" :class="{ 'engine-active': isEngineEnabled }">
         <div class="analyzis-header">
-          <h2 class="analyzis">Analysis <span v-if="isAnalyzing" class="thinking-dot" title="Engine is thinking"></span></h2>
+          <div class="analysis-title-row">
+            <button
+              type="button"
+              class="control-icon-btn settings-toggle desktop-settings"
+              @click="isSettingsOpen = true"
+              title="Settings"
+              aria-label="Settings"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
+              </svg>
+            </button>
+
+            <h2 class="analyzis">
+              Analysis
+              <span v-if="isAnalyzing" class="thinking-dot" title="Engine is thinking"></span>
+            </h2>
+          </div>
+
+          <div class="engine-controls">
+            <button
+              type="button"
+              class="control-icon-btn settings-toggle mobile-settings"
+              @click="isSettingsOpen = true"
+              title="Settings"
+              aria-label="Settings"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
+              </svg>
+            </button>
+
+            <div class="pv-switcher" role="group" aria-label="Number of analysis lines" title="Number of analysis lines">
+              <button
+                v-for="n in [1, 2, 3]"
+                :key="n"
+                type="button"
+                :class="{ active: analysisMultiPV === n }"
+                @click="analysisMultiPV = n"
+              >
+                {{ n }}
+              </button>
+            </div>
+
+            <div class="depth-chip" title="Current engine depth">
+              <span class="depth-label">Depth</span>
+              <span class="depth-value">{{ currentDepth }}</span>
+            </div>
+
+            <label class="engine-toggle" :class="{ active: isEngineEnabled }">
+              <input type="checkbox" v-model="isEngineEnabled" />
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">{{ isEngineEnabled ? 'ON' : 'OFF' }}</span>
+            </label>
+          </div>
         </div>
+
         <div v-if="moveData" class="move-data">
-          <p class="depthnum">Depth {{ currentDepth }}</p>
           <div class="line pretty-scroll" :class="{ analyzing: isAnalyzing }">
             <span class="evalnum2">{{ formatEval(moveData?.eval) }}</span>
-            <span v-for="(move, idx) in sanLine" :key="'best-' + idx" class="line-move" @click="playLineMoves(moveData.best_line, idx + 1)">{{ prettyMove(move) }}&nbsp;</span>
+            <span
+              v-for="(move, idx) in sanLine"
+              :key="'best-' + idx"
+              class="line-move"
+              @click="playLineMoves(moveData.best_line, idx + 1)"
+            >
+              {{ prettyMove(move) }}&nbsp;
+            </span>
           </div>
-          <div class="secondline pretty-scroll" v-if="excellentSanLine.length">
+
+          <div class="secondline pretty-scroll" v-if="excellentSanLine.length && isEngineEnabled">
             <span class="evalnum3">{{ moveData?.excellent_eval ? formatEval(moveData.excellent_eval) : " " }}</span>
-            <span v-for="(move, idx) in excellentSanLine" :key="'exc-' + idx" class="line-move" @click="playLineMoves(moveData.excellent_line, idx + 1)">{{ prettyMove(move) }}&nbsp;</span>
+            <span
+              v-for="(move, idx) in excellentSanLine"
+              :key="'exc-' + idx"
+              class="line-move"
+              @click="playLineMoves(moveData.excellent_line, idx + 1)"
+            >
+              {{ prettyMove(move) }}&nbsp;
+            </span>
           </div>
-          <div class="secondline pretty-scroll" v-if="thirdSanLine.length">
+
+          <div class="secondline pretty-scroll" v-if="thirdSanLine.length && isEngineEnabled">
             <span class="evalnum3">{{ moveData?.third_eval ? formatEval(moveData.third_eval) : " " }}</span>
-            <span v-for="(move, idx) in thirdSanLine" :key="'third-' + idx" class="line-move" @click="playLineMoves(moveData.third_line, idx + 1)">{{ prettyMove(move) }}&nbsp;</span>
+            <span
+              v-for="(move, idx) in thirdSanLine"
+              :key="'third-' + idx"
+              class="line-move"
+              @click="playLineMoves(moveData.third_line, idx + 1)"
+            >
+              {{ prettyMove(move) }}&nbsp;
+            </span>
           </div>
+
           <p :style="{ color: color }" class="accuracydescribtion">{{ isAccuracy }}</p>
           <p class="bestmove" v-if="movesListUCI.length > 0" @click="playMove">{{ displayBest() }}</p>
         </div>
       </div>
+
       <div class="moves">
         <div class="tabs-toggle">
           <button :class="{ active: activeTab === 'moves' }" @click="activeTab = 'moves'">Moves</button>
           <button :class="{ active: activeTab === 'report' }" @click="activeTab = 'report'">Report</button>
           <button :class="{ active: activeTab === 'explorer' }" @click="activeTab = 'explorer'">Explorer</button>
         </div>
+
         <div class="moveslist" v-if="activeTab === 'moves'" ref="movesListRef">
           <template v-for="row in renderedMoves" :key="row.key">
             <div class="move-row" :class="{ variant: row.depth > 0 }" :style="{ '--indent': `${row.depth * 1.05}rem` }">
@@ -1458,88 +1702,178 @@ async function fetchOpeningNameForSave(uciList) {
                 <template v-if="cell">
                   <span v-if="cell.showNum" class="move-num">{{ cell.displayNum }}{{ cell.isWhite ? '.' : '...' }}</span>
                   <span class="move-san-text">{{ cell.node.san }}</span>
-                  <img v-if="cell.node.accuracy" :src="accuracySymbol(cell.node.accuracy)" class="acc-badge" :class="cell.node.accuracy" />
+                  <img
+                    v-if="cell.node.accuracy"
+                    :src="accuracySymbol(cell.node.accuracy)"
+                    class="acc-badge"
+                    :class="cell.node.accuracy"
+                  />
                 </template>
               </div>
             </div>
           </template>
         </div>
+
         <div class="report" v-else-if="activeTab === 'report'">
           <div class="report-columns">
             <div class="report-col">
-              <div class="report-side-header"> <span class="side-swatch white-swatch"></span> <span>White</span> </div>
-              <div class="accuracy-score" v-if="gameReportStats.white.accuracy !== null">{{ gameReportStats.white.accuracy.toFixed(1) }} <span class="accuracy-percent">%</span></div>
+              <div class="report-side-header">
+                <span class="side-swatch white-swatch"></span>
+                <span>White</span>
+              </div>
+
+              <div class="accuracy-score" v-if="gameReportStats.white.accuracy !== null">
+                {{ gameReportStats.white.accuracy.toFixed(1) }}
+                <span class="accuracy-percent">%</span>
+              </div>
               <div class="accuracy-score empty" v-else>—</div>
-              <div class="est-rating" v-if="estimatedRatings.white !== null"> <span class="est-rating-label">Est. Rating</span> <span class="est-rating-value">{{ estimatedRatings.white }}</span> </div>
-              <div class="est-rating empty" v-else> <span class="est-rating-label">Est. Rating</span> <span class="est-rating-value">—</span> </div>
-              <div v-for="key in classificationOrder" :key="'w-' + key" class="report-row" :class="{ dim: gameReportStats.white.counts[key] === 0 }">
+
+              <div class="est-rating" v-if="estimatedRatings.white !== null">
+                <span class="est-rating-label">Est. Rating</span>
+                <span class="est-rating-value">{{ estimatedRatings.white }}</span>
+              </div>
+              <div class="est-rating empty" v-else>
+                <span class="est-rating-label">Est. Rating</span>
+                <span class="est-rating-value">—</span>
+              </div>
+
+              <div
+                v-for="key in classificationOrder"
+                :key="'w-' + key"
+                class="report-row"
+                :class="{ dim: gameReportStats.white.counts[key] === 0 }"
+              >
                 <img :src="accuracySymbol(key)" class="report-row-icon" />
-                <span class="report-row-label" :style="{ color: classificationMeta[key].color }">{{ classificationMeta[key].label }}</span>
+                <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
+                  {{ classificationMeta[key].label }}
+                </span>
                 <span class="report-row-count">{{ gameReportStats.white.counts[key] }}</span>
               </div>
             </div>
+
             <div class="report-col">
-              <div class="report-side-header"> <span class="side-swatch black-swatch"></span> <span>Black</span> </div>
-              <div class="accuracy-score" v-if="gameReportStats.black.accuracy !== null">{{ gameReportStats.black.accuracy.toFixed(1) }} <span class="accuracy-percent">%</span></div>
+              <div class="report-side-header">
+                <span class="side-swatch black-swatch"></span>
+                <span>Black</span>
+              </div>
+
+              <div class="accuracy-score" v-if="gameReportStats.black.accuracy !== null">
+                {{ gameReportStats.black.accuracy.toFixed(1) }}
+                <span class="accuracy-percent">%</span>
+              </div>
               <div class="accuracy-score empty" v-else>—</div>
-              <div class="est-rating" v-if="estimatedRatings.black !== null"> <span class="est-rating-label">Est. Rating</span> <span class="est-rating-value">{{ estimatedRatings.black }}</span> </div>
-              <div class="est-rating empty" v-else> <span class="est-rating-label">Est. Rating</span> <span class="est-rating-value">—</span> </div>
-              <div v-for="key in classificationOrder" :key="'b-' + key" class="report-row" :class="{ dim: gameReportStats.black.counts[key] === 0 }">
+
+              <div class="est-rating" v-if="estimatedRatings.black !== null">
+                <span class="est-rating-label">Est. Rating</span>
+                <span class="est-rating-value">{{ estimatedRatings.black }}</span>
+              </div>
+              <div class="est-rating empty" v-else>
+                <span class="est-rating-label">Est. Rating</span>
+                <span class="est-rating-value">—</span>
+              </div>
+
+              <div
+                v-for="key in classificationOrder"
+                :key="'b-' + key"
+                class="report-row"
+                :class="{ dim: gameReportStats.black.counts[key] === 0 }"
+              >
                 <img :src="accuracySymbol(key)" class="report-row-icon" />
-                <span class="report-row-label" :style="{ color: classificationMeta[key].color }">{{ classificationMeta[key].label }}</span>
+                <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
+                  {{ classificationMeta[key].label }}
+                </span>
                 <span class="report-row-count">{{ gameReportStats.black.counts[key] }}</span>
               </div>
             </div>
           </div>
         </div>
+
         <div class="explorer" v-else-if="activeTab === 'explorer'">
           <div class="explorer-db-toggle">
             <button :class="{ active: explorerDb === 'masters' }" @click="explorerDb = 'masters'">Masters</button>
             <button :class="{ active: explorerDb === 'lichess' }" @click="explorerDb = 'lichess'">Players</button>
           </div>
-          <div v-if="explorerLoading" class="explorer-status"> <div class="mini-spinner"></div>Loading {{ explorerDb === 'masters' ? 'master' : 'player' }} games…</div>
+
+          <div v-if="explorerLoading" class="explorer-status">
+            <div class="mini-spinner"></div>
+            Loading {{ explorerDb === 'masters' ? 'master' : 'player' }} games…
+          </div>
           <div v-else-if="explorerError" class="explorer-status error">{{ explorerError }}</div>
+
           <template v-else>
             <div class="explorer-header">
               <span class="explorer-eco" v-if="openingEco">{{ openingEco }}</span>
               <span class="explorer-name">{{ opening }}</span>
             </div>
+
             <div class="explorer-table" v-if="explorerMoves.length">
-              <div class="explorer-row explorer-row-head"> <span class="col-move">Move</span> <span class="col-games">Games</span> <span class="col-split">W / D / B</span> </div>
+              <div class="explorer-row explorer-row-head">
+                <span class="col-move">Move</span>
+                <span class="col-games">Games</span>
+                <span class="col-split">W / D / B</span>
+              </div>
+
               <div v-for="m in explorerMoves" :key="m.uci" class="explorer-row" @click="playExplorerMove(m.uci)">
                 <span class="col-move">{{ prettyMove(m.san) }}</span>
-                <span class="col-games"> <span class="games-percent">{{ m.percent }}%</span> <span class="games-count">{{ formatCount(m.total) }}</span> </span>
+                <span class="col-games">
+                  <span class="games-percent">{{ m.percent }}%</span>
+                  <span class="games-count">{{ formatCount(m.total) }}</span>
+                </span>
                 <span class="col-split">
                   <div class="split-bar">
-                    <div class="split-white" :style="{ width: m.white + '%' }"> <span v-if="m.white >= 15" class="split-pct">{{ m.white }}%</span> </div>
-                    <div class="split-draw" :style="{ width: m.draws + '%' }"> <span v-if="m.draws >= 15" class="split-pct">{{ m.draws }}%</span> </div>
-                    <div class="split-black" :style="{ width: m.black + '%' }"> <span v-if="m.black >= 15" class="split-pct">{{ m.black }}%</span> </div>
+                    <div class="split-white" :style="{ width: m.white + '%' }">
+                      <span v-if="m.white >= 15" class="split-pct">{{ m.white }}%</span>
+                    </div>
+                    <div class="split-draw" :style="{ width: m.draws + '%' }">
+                      <span v-if="m.draws >= 15" class="split-pct">{{ m.draws }}%</span>
+                    </div>
+                    <div class="split-black" :style="{ width: m.black + '%' }">
+                      <span v-if="m.black >= 15" class="split-pct">{{ m.black }}%</span>
+                    </div>
                   </div>
                 </span>
               </div>
+
               <div class="explorer-row explorer-row-total" v-if="explorerStats">
                 <span class="col-move">Σ</span>
-                <span class="col-games"> <span class="games-percent">100%</span> <span class="games-count">{{ formatCount(explorerStats.total) }}</span> </span>
+                <span class="col-games">
+                  <span class="games-percent">100%</span>
+                  <span class="games-count">{{ formatCount(explorerStats.total) }}</span>
+                </span>
                 <span class="col-split">
                   <div class="split-bar">
-                    <div class="split-white" :style="{ width: explorerStats.white + '%' }"> <span v-if="explorerStats.white >= 15" class="split-pct">{{ explorerStats.white }}%</span> </div>
-                    <div class="split-draw" :style="{ width: explorerStats.draws + '%' }"> <span v-if="explorerStats.draws >= 15" class="split-pct">{{ explorerStats.draws }}%</span> </div>
-                    <div class="split-black" :style="{ width: explorerStats.black + '%' }"> <span v-if="explorerStats.black >= 15" class="split-pct">{{ explorerStats.black }}%</span> </div>
+                    <div class="split-white" :style="{ width: explorerStats.white + '%' }">
+                      <span v-if="explorerStats.white >= 15" class="split-pct">{{ explorerStats.white }}%</span>
+                    </div>
+                    <div class="split-draw" :style="{ width: explorerStats.draws + '%' }">
+                      <span v-if="explorerStats.draws >= 15" class="split-pct">{{ explorerStats.draws }}%</span>
+                    </div>
+                    <div class="split-black" :style="{ width: explorerStats.black + '%' }">
+                      <span v-if="explorerStats.black >= 15" class="split-pct">{{ explorerStats.black }}%</span>
+                    </div>
                   </div>
                 </span>
               </div>
             </div>
+
             <div class="explorer-status" v-else>No games found for this position</div>
           </template>
         </div>
       </div>
     </div>
   </div>
+
   <Teleport to="body">
-    <div v-if="contextMenu.visible" class="context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop>
+    <div
+      v-if="contextMenu.visible"
+      class="context-menu"
+      :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
+      @click.stop
+    >
       <button class="context-menu-item delete" @click="handleDeleteFromMenu">Delete move</button>
     </div>
   </Teleport>
+
   <Transition name="toast-fade">
     <div v-if="toastMessage" class="toast">{{ toastMessage }}</div>
   </Transition>
@@ -1637,8 +1971,6 @@ async function fetchOpeningNameForSave(uciList) {
   background-size: 25% 25% !important;
 }
 
-/* Tint chessground's own last-move squares to match the accuracy badge color.
-   --last-move-highlight is set inline on .board-wrapper based on the current move's classification. */
 :deep(cg-board square.last-move) {
   background-color: var(--last-move-highlight, rgba(155, 199, 0, 0.41)) !important;
 }
@@ -1669,8 +2001,6 @@ async function fetchOpeningNameForSave(uciList) {
   box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5);
 }
 
-/* Eval fill is driven by the --eval custom property (set inline on .evalbar)
-   so the same markup works vertically on desktop and horizontally on mobile. */
 .blackeval,
 .whiteeval {
   width: 100%;
@@ -1751,149 +2081,38 @@ async function fetchOpeningNameForSave(uciList) {
   flex-shrink: 0;
 }
 
-.moves {
-  margin-top: 10px;
-  background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
-  border-radius: 16px;
-  width: 100%;
-  max-width: 500px;
-  height: clamp(300px, 50vh, 500px);
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  overflow-y: auto;
-  overflow-x: hidden;
-  box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  margin: 0 auto;
-  overflow: auto;
-  min-height: 200px;
-  max-height: 400px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(194, 197, 170, 0.4) rgba(0, 0, 0, 0.2);
-}
-
-@media (min-width: 1200px) {
-  .moves {
-    max-width: 20rem;
-  }
-}
-
-.moveslist {
-  margin: 0 auto;
-  padding: 12px;
-  width: 100%;
-  box-sizing: border-box;
-  background: linear-gradient(135deg, var(--list-1), var(--list-2));
-  border-radius: 14px;
-  font-size: clamp(0.9rem, 2vw, 1rem);
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  scroll-behavior: smooth;
-}
-
-.move-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-  align-items: start;
-  margin-left: var(--indent, 0rem);
-  padding-left: 0.35rem;
-  position: relative;
-}
-
-.move-row.variant {
-  border-left: 2px solid rgba(232, 232, 208, 0.16);
-}
-
-.move-cell {
-  min-height: 2.45rem;
-  padding: 0.55rem 0.7rem;
-  border-radius: 12px;
-  cursor: pointer;
-  color: #f4f0e3;
-  font-weight: 500;
-  transition: all 0.15s ease;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  background: rgba(0, 0, 0, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-sizing: border-box;
-  overflow: hidden;
-  user-select: none;
-}
-
-.move-cell:hover {
-  background: rgba(103, 122, 228, 0.18);
-  transform: translateY(-1px);
-}
-
-.move-cell.active {
-  background: linear-gradient(135deg, rgba(103, 122, 228, 0.42), rgba(103, 122, 228, 0.22));
-  border-color: rgba(220, 228, 255, 0.7);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 18px rgba(103, 122, 228, 0.25);
-}
-
-.move-cell.variant {
-  color: #dbe4ff;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.move-cell.empty {
-  pointer-events: none;
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.move-num {
-  color: rgba(232, 232, 208, 0.72);
-  font-size: 0.78em;
-  font-weight: 700;
-  padding: 0.15rem 0.45rem;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.16);
-}
-
-.move-san-text {
-  font-weight: 600;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.acc-badge {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  margin-left: 2px;
-}
-
 .analysis-container {
   grid-area: analysis;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 95vh;
 }
 
 .analyze {
   border-radius: 15px;
   width: 100%;
   max-width: 500px;
-  min-height: 200px;
   padding-bottom: 1rem;
   background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
   box-sizing: border-box;
   box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  margin: auto;
-  overflow: auto;
+  margin: 0 auto;
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.4) rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+  flex: 0 0 auto;
+  max-height: 42vh;
+}
+
+.analyze.engine-active {
+  border: 1px solid rgba(106, 209, 63, 0.3);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 15px rgba(106, 209, 63, 0.15);
 }
 
 @media (min-width: 1200px) {
@@ -1904,10 +2123,21 @@ async function fetchOpeningNameForSave(uciList) {
 
 .analyzis-header {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem 0.75rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.analysis-title-row {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 3rem;
-  padding: 1rem 1rem 0.5rem;
+  justify-content: center;
+  width: 100%;
+  min-height: 2.2rem;
 }
 
 .analyzis {
@@ -1917,9 +2147,11 @@ async function fetchOpeningNameForSave(uciList) {
   text-transform: uppercase;
   text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
   letter-spacing: 2px;
-  font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+  font-size: clamp(1.05rem, 2.5vw, 1.35rem);
   display: flex;
   align-items: center;
+  justify-content: center;
+  text-align: center;
   gap: 0.5rem;
   margin: 0;
 }
@@ -1936,6 +2168,183 @@ async function fetchOpeningNameForSave(uciList) {
 @keyframes thinkingPulse {
   0%, 100% { opacity: 0.35; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.15); }
+}
+
+.control-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+  color: rgba(244, 240, 227, 0.86);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
+}
+
+.control-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #f4f0e3;
+}
+
+.control-icon-btn svg {
+  display: block;
+}
+
+.desktop-settings {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.desktop-settings:hover {
+  transform: translateY(-50%);
+}
+
+.mobile-settings {
+  display: none;
+}
+
+.engine-controls {
+  margin-left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.pv-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  height: 1.8rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
+  box-sizing: border-box;
+}
+
+.pv-switcher button {
+  min-width: 1.65rem;
+  height: 100%;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(245, 245, 220, 0.62);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0 0.45rem;
+}
+
+.pv-switcher button:hover {
+  color: #f5f5dc;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pv-switcher button.active {
+  background: linear-gradient(145deg, rgba(168, 217, 122, 0.24), rgba(106, 209, 63, 0.18));
+  color: #a8d97a;
+  box-shadow: 0 0 0 1px rgba(168, 217, 122, 0.28), 0 3px 8px rgba(0, 0, 0, 0.25);
+}
+
+.depth-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 1.8rem;
+  padding: 0 0.65rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
+  color: rgba(244, 240, 227, 0.75);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.depth-value {
+  font-family: "JetBrains Mono", monospace;
+  color: #f4f0e3;
+  font-size: 0.74rem;
+  letter-spacing: 0;
+}
+
+.engine-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.engine-toggle input {
+  display: none;
+}
+
+.toggle-slider {
+  width: 32px;
+  height: 18px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+  position: relative;
+  transition: background 0.3s ease;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: #888;
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.engine-toggle.active .toggle-slider {
+  background: rgba(106, 209, 63, 0.25);
+  border-color: rgba(106, 209, 63, 0.5);
+}
+
+.engine-toggle.active .toggle-slider::after {
+  left: 18px;
+  background: #6ad13f;
+  box-shadow: 0 0 8px rgba(106, 209, 63, 0.8);
+}
+
+.toggle-label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: rgba(245, 245, 220, 0.6);
+  transition: color 0.3s ease;
+}
+
+.engine-toggle.active .toggle-label {
+  color: #6ad13f;
+  text-shadow: 0 0 6px rgba(106, 209, 63, 0.6);
 }
 
 .analysis-loading-overlay {
@@ -2069,6 +2478,125 @@ async function fetchOpeningNameForSave(uciList) {
   opacity: 0;
 }
 
+.moves {
+  margin-top: 0;
+  background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
+  border-radius: 16px;
+  width: 100%;
+  max-width: 500px;
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  overflow-y: auto;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 0 auto;
+  min-height: 340px;
+  flex: 1 1 auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(194, 197, 170, 0.4) rgba(0, 0, 0, 0.2);
+}
+
+@media (min-width: 1200px) {
+  .moves {
+    max-width: 20rem;
+  }
+}
+
+.moveslist {
+  margin: 0 auto;
+  padding: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  background: linear-gradient(135deg, var(--list-1), var(--list-2));
+  border-radius: 14px;
+  font-size: clamp(0.9rem, 2vw, 1rem);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  scroll-behavior: smooth;
+}
+
+.move-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-items: start;
+  margin-left: var(--indent, 0rem);
+  padding-left: 0.35rem;
+  position: relative;
+}
+
+.move-row.variant {
+  border-left: 2px solid rgba(232, 232, 208, 0.16);
+}
+
+.move-cell {
+  min-height: 2.45rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #f4f0e3;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  background: rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-sizing: border-box;
+  overflow: hidden;
+  user-select: none;
+}
+
+.move-cell:hover {
+  background: rgba(103, 122, 228, 0.18);
+  transform: translateY(-1px);
+}
+
+.move-cell.active {
+  background: linear-gradient(135deg, rgba(103, 122, 228, 0.42), rgba(103, 122, 228, 0.22));
+  border-color: rgba(220, 228, 255, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 18px rgba(103, 122, 228, 0.25);
+}
+
+.move-cell.variant {
+  color: #dbe4ff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.move-cell.empty {
+  pointer-events: none;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.move-num {
+  color: rgba(232, 232, 208, 0.72);
+  font-size: 0.78em;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.move-san-text {
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acc-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  margin-left: 2px;
+}
+
 .tabs-toggle {
   display: flex;
   gap: 4px;
@@ -2110,9 +2638,8 @@ async function fetchOpeningNameForSave(uciList) {
 }
 
 .boardtools {
-  display: flex;
-  gap: 0.75rem;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   min-height: 3.2rem;
   width: 100%;
@@ -2123,18 +2650,22 @@ async function fetchOpeningNameForSave(uciList) {
   border-radius: 10px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   margin: 0.4rem 0 0 0;
-  flex-wrap: nowrap;
 }
 
 .boardtools-nav {
+  grid-column: 2;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
 }
 
-/* Shared icon-button style for the toolbar's Settings / Copy game
-   buttons - visible on both desktop and mobile now. */
+.share-menu-wrap {
+  grid-column: 3;
+  justify-self: end;
+  position: relative;
+}
+
 .toolbar-icon-btn {
   display: flex;
   align-items: center;
@@ -2154,10 +2685,6 @@ async function fetchOpeningNameForSave(uciList) {
 .toolbar-icon-btn:hover {
   background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-}
-
-.share-menu-wrap {
-  position: relative;
 }
 
 .share-menu {
@@ -2272,33 +2799,23 @@ async function fetchOpeningNameForSave(uciList) {
   padding: 0 1rem;
 }
 
-.depthnum {
-  text-align: center;
-  color: rgba(245, 245, 220, 0.7);
-  font-size: 0.78rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  margin: 0.3rem 0 0.5rem;
-}
-
 .line,
 .secondline {
   font-family: "JetBrains Mono", monospace;
   display: flex;
   white-space: nowrap;
   align-items: center;
-  gap: 0.5rem;
-  font-size: clamp(0.85rem, 2vw, 1rem);
-  padding: 0.5rem;
-  margin: 8px 0;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.6rem;
+  margin: 4px 0;
   background: rgba(0, 0, 0, 0.25);
-  border-radius: 10px;
+  border-radius: 8px;
   color: #eae4d8;
   box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
   overflow-x: auto;
 }
 
-/* Custom Scrollbar Styles for Analysis Lines */
 .pretty-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.2) rgba(0, 0, 0, 0.15);
@@ -2324,14 +2841,14 @@ async function fetchOpeningNameForSave(uciList) {
 
 .evalnum2,
 .evalnum3 {
-  font-size: clamp(1rem, 2vw, 1.3rem);
+  font-size: 0.9rem;
   color: #171717;
   background-color: #606847;
-  border-radius: 10px;
+  border-radius: 6px;
   flex-shrink: 0;
-  min-width: 4.4rem;
+  min-width: 3.8rem;
   width: auto;
-  padding: 0 0.5rem;
+  padding: 0 0.4rem;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
@@ -2766,20 +3283,17 @@ async function fetchOpeningNameForSave(uciList) {
     width: 24px;
     height: 24px;
   }
+
   .board-acc-icon {
     width: 5.2%;
     height: 5.2%;
   }
+
   .report-row-icon {
     width: 18px;
     height: 18px;
   }
 
-  /* ---- Flatten the layout wrappers so their children become direct
-     flex items of .grid-layout and can be freely reordered with
-     `order` - lines above the board, board, then tabs, then the tool
-     bar, matching a Lichess-style mobile layout. Desktop's grid-area
-     layout above is completely untouched. ---- */
   .grid-layout {
     display: flex;
     flex-direction: column;
@@ -2787,6 +3301,7 @@ async function fetchOpeningNameForSave(uciList) {
     padding: 0.25rem;
     gap: 0.3rem;
   }
+
   .board-area,
   .board-wrapper,
   .analysis-container {
@@ -2794,18 +3309,16 @@ async function fetchOpeningNameForSave(uciList) {
   }
 
   .title-slot { order: 0; }
-  .analyze    { order: 1; } /* engine lines, small, above the board */
+  .analyze    { order: 1; }
   .player-bar { order: 2; }
   .board-row  { order: 2; flex-direction: column; gap: 0.3rem; }
-  .moves      { order: 3; } /* moves / report / explorer */
-  .boardtools { order: 4; } /* nav + relocated settings/share, at the bottom */
+  .moves      { order: 3; }
+  .boardtools { order: 4; }
 
   .board-wrapper {
     max-width: 100%;
   }
 
-  /* ---- Horizontal evalbar sitting above the board, full width,
-     so the board itself gets the entire viewport width ---- */
   .evalbar {
     order: -1;
     width: 100%;
@@ -2817,16 +3330,25 @@ async function fetchOpeningNameForSave(uciList) {
     flex-direction: row-reverse;
     border-radius: 8px;
   }
+
   .evalbar.flipped .evalbar-inner {
     flex-direction: row;
   }
+
   .blackeval,
   .whiteeval {
     height: 100%;
     width: auto;
   }
-  .blackeval { width: var(--eval, 50%); }
-  .whiteeval { width: calc(100% - var(--eval, 50%)); }
+
+  .blackeval {
+    width: var(--eval, 50%);
+  }
+
+  .whiteeval {
+    width: calc(100% - var(--eval, 50%));
+  }
+
   .evalnum {
     top: 50%;
     left: auto;
@@ -2842,9 +3364,6 @@ async function fetchOpeningNameForSave(uciList) {
     font-size: 0.78rem;
   }
 
-  /* ---- Engine lines: strip the panel chrome, drop the header, depth
-     text, move description and best-move hint (Copy PGN/FEN and
-     Settings live in the sticky toolbar below) - just the line rows. ---- */
   .analyze {
     background: none;
     box-shadow: none;
@@ -2853,16 +3372,79 @@ async function fetchOpeningNameForSave(uciList) {
     margin: 0;
     max-width: none;
     min-height: 0;
+    max-height: none;
   }
+
   .move-data {
     padding: 0;
   }
-  .analyzis-header,
-  .depthnum,
+
+  .analyzis-header {
+    display: flex !important;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0.5rem 0.35rem;
+    margin: 0;
+    gap: 0.35rem;
+  }
+
+  .analyzis-header .analyzis {
+    display: flex !important;
+    font-size: 0.92rem;
+    letter-spacing: 1.2px;
+  }
+
+  .analysis-title-row {
+    min-height: 1.4rem;
+  }
+
+  .desktop-settings {
+    display: none;
+  }
+
+  .mobile-settings {
+    display: inline-flex;
+    width: 1.9rem;
+    height: 1.9rem;
+    border-radius: 9px;
+  }
+
+  .engine-controls {
+    margin-left: 0;
+    gap: 0.35rem;
+    justify-content: center;
+  }
+
+  .pv-switcher,
+  .depth-chip {
+    height: 1.9rem;
+  }
+
+  .pv-switcher button {
+    height: 100%;
+    min-width: 1.8rem;
+    font-size: 0.72rem;
+    padding: 0 0.45rem;
+  }
+
+  .depth-chip {
+    padding: 0 0.6rem;
+    font-size: 0.62rem;
+  }
+
+  .depth-value {
+    font-size: 0.76rem;
+  }
+
+  .engine-toggle .toggle-label {
+    font-size: 0.68rem;
+  }
+
   .accuracydescribtion,
   .bestmove {
     display: none;
   }
+
   .line,
   .secondline {
     font-size: 0.74rem;
@@ -2870,25 +3452,30 @@ async function fetchOpeningNameForSave(uciList) {
     margin: 3px 0;
     gap: 0.35rem;
   }
+
   .evalnum2,
   .evalnum3 {
     font-size: 0.78rem;
     min-width: 2.8rem;
     padding: 0 0.4rem;
   }
+
   .line.analyzing {
     animation: linePulse 1.2s ease-in-out infinite;
   }
+
   @keyframes linePulse {
-    0%, 100% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4); }
-    50% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(106, 209, 63, 0.55); }
+    0%, 100% {
+      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
+    }
+    50% {
+      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(106, 209, 63, 0.55);
+    }
   }
 
-  /* ---- Moves / Report / Explorer now get the room the analysis
-     panel used to take up. ---- */
   .moves {
     flex: 1 1 auto;
-    min-height: 280px;
+    min-height: 300px;
     height: auto;
     max-width: none;
     margin: 0;
@@ -2931,7 +3518,7 @@ async function fetchOpeningNameForSave(uciList) {
 
   .explorer {
     padding: 0.4rem 0.5rem 0.6rem;
-    min-height: 280px; /* Prevents container shrink during reload/spinner state */
+    min-height: 280px;
   }
 
   .explorer-header {
@@ -2981,10 +3568,6 @@ async function fetchOpeningNameForSave(uciList) {
     font-size: 0.72rem;
   }
 
-  /* ---- Tool bar: sticks to the bottom of the viewport as a fallback
-     for short devices that still need to scroll (Lichess-style bottom
-     nav). Buttons are spaced using justify-content: space-between
-     so the side items touch the edges and the nav stays in the middle. ---- */
   .boardtools {
     position: sticky;
     bottom: 0;
@@ -2993,9 +3576,9 @@ async function fetchOpeningNameForSave(uciList) {
     padding: 0.3rem 0.5rem calc(0.3rem + env(safe-area-inset-bottom, 0px));
     margin-top: 0;
     gap: 0.4rem;
-    justify-content: space-between;
     flex-wrap: nowrap;
   }
+
   .boardtools-nav {
     gap: 1rem;
     justify-content: center;

@@ -49,7 +49,7 @@
               Search Depth <span class="highlight">{{ targetDepth }}</span>
             </label>
             <input 
-              type="range" min="10" max="30" step="1"
+              type="range" min="10" max="20" step="1"
               :value="targetDepth"
               @input="emit('update:targetDepth', Number($event.target.value))"
               @change="emit('depthChanged')"
@@ -77,8 +77,12 @@
               <input type="checkbox" :checked="soundOn" @change="emit('update:soundOn', $event.target.checked)">
             </label>
             <label class="toggle-label">
-              <span>Best Move Arrow</span>
-              <input type="checkbox" :checked="showBestArrow" @change="emit('update:showBestArrow', $event.target.checked)">
+              <span>Show Best Move Arrow</span>
+              <input
+                type="checkbox"
+                :checked="showBestArrow"
+                @change="emit('update:showBestArrow', $event.target.checked)"
+              >
             </label>
           </div>
         </div>
