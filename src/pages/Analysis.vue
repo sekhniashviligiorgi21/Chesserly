@@ -3476,6 +3476,7 @@ async function fetchOpeningNameForSave(uciList) {
   .moves {
     flex: 1 1 auto;
     min-height: 300px;
+    max-height: 450px;
     height: auto;
     max-width: none;
     margin: 0;
