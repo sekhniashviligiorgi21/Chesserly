@@ -97,7 +97,7 @@ const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
 const shareMenuOpen = ref(false)
 
 // --- Engine Toggle & MultiPV State ---
-const isEngineEnabled = ref(false)
+const isEngineEnabled = ref(true)
 
 const BEST_ARROW_STORAGE_KEY = 'chesslab_showBestArrow'
 
@@ -1516,7 +1516,7 @@ async function fetchOpeningNameForSave(uciList) {
     <Title class="title-slot" />
 
     <div class="board-area">
-      <div class="board-wrapper" ref="boardRef" :style="{ '--last-move-highlight': lastMoveHighlightColor}" @click="handleBoardClick">
+      <div class="board-wrapper" ref="boardRef" :style="{ '--last-move-highlight': lastMoveHighlightColor}" @click="handleBoardClick" @touchend="handleBoardClick">
         <div class="player-bar" v-if="hasPlayerInfo">
           <span class="player-color-dot" :class="topPlayer.side"></span>
           <span class="player-name">{{ topPlayer.name }}</span>
