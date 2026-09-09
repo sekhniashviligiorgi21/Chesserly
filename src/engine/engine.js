@@ -143,18 +143,25 @@ export function cancelAnalysis() {
     sf.onmessage = null
 
     return new Promise((resolve) => {
+        let resolved = false
         const absorber = (e) => {
             if (typeof e.data === 'string' && e.data.startsWith('bestmove')) {
-                sf.removeEventListener('message', absorber)
-                resolve()
+                if (!resolved) {
+                    resolved = true
+                    sf.removeEventListener('message', absorber)
+                    setTimeout(resolve, 10) 
+                }
             }
         }
         sf.addEventListener('message', absorber)
         sf.postMessage('stop')
         setTimeout(() => {
-            sf.removeEventListener('message', absorber)
-            resolve()
-        }, 100)
+            if (!resolved) {
+                resolved = true
+                sf.removeEventListener('message', absorber)
+                resolve()
+            }
+        }, 150)
     })
 }
 

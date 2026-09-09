@@ -168,6 +168,7 @@
   })
 
   watch(isEngineEnabled, () => {
+    if (isImporting.value) return
     getAccuracy()
   })
 
@@ -635,7 +636,7 @@
 
     playSound('move')
   }
-  
+
   function redoMove() {
     lastMoveSquare.value = null
     lastMoveFromSquare.value = null
