@@ -1530,7 +1530,7 @@
               class="game-board"
               @move="handleBothMoves"
               @board-created="onBoardCreated"
-              :board-config="{ coordinates: true, animation: { enabled: false } }"
+              :board-config="{ coordinates: true, animation: { enabled: true } }"
             />
             <img
               v-if="lastMoveSquare && lastMoveAccuracy"
