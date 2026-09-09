@@ -11,6 +11,12 @@
   import { startEngine, getEvaluation, cancelAnalysis } from "../engine/engine.js"
   import { useRoute, useRouter } from 'vue-router'
 
+  import moveSfx from '../assets/sounds/move.mp3'
+  import captureSfx from '../assets/sounds/capture.mp3'
+  import checkSfx from '../assets/sounds/check.mp3'
+  import castleSfx from '../assets/sounds/castle.mp3'
+  import promoteSfx from '../assets/sounds/promote.mp3'
+
   const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
   watch(currentTheme, (newTheme) => {
     document.documentElement.setAttribute('data-theme', newTheme)
@@ -95,6 +101,19 @@
   const activeTab = ref('moves')
   const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
   const shareMenuOpen = ref(false)
+
+  const audioCache = {
+    move: new Audio(moveSfx),
+    capture: new Audio(captureSfx),
+    check: new Audio(checkSfx),
+    castle: new Audio(castleSfx),
+    promote: new Audio(promoteSfx)
+  }
+
+  Object.values(audioCache).forEach(audio => {
+    audio.preload = 'auto'
+    audio.volume = 0.6
+  })
 
   // --- Engine Toggle & MultiPV State ---
   const isEngineEnabled = ref(true)
@@ -393,7 +412,6 @@
   let longPressTimer = null
   let longPressTriggered = false
   let toastTimeout = null
-  let audioCtx = null
   let lastPress = 0
 
   const moveTree = {
@@ -495,39 +513,40 @@
     shareMenuOpen.value = !shareMenuOpen.value
   }
 
-  function ensureAudioCtx() {
-    if (!audioCtx) {
-      const Ctx = window.AudioContext || window.webkitAudioContext
-      audioCtx = new Ctx()
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume()
-    return audioCtx
-  }
   function playSound(type) {
     if (!soundOn.value) return
+
+    const audio = audioCache[type]
+    if (!audio) return
+
     try {
-      const ctx = ensureAudioCtx()
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain); gain.connect(ctx.destination)
-      const now = ctx.currentTime
-      const presets = {
-        move: { freq: 520, gain: 0.06, dur: 0.09 },
-        capture: { freq: 260, gain: 0.10, dur: 0.14 },
-        check: { freq: 880, gain: 0.10, dur: 0.20 },
-      }
-      const preset = presets[type] ?? presets.move
-      osc.type = type === 'capture' ? 'square' : 'sine'
-      osc.frequency.setValueAtTime(preset.freq, now)
-      gain.gain.setValueAtTime(preset.gain, now)
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + preset.dur)
-      osc.start(now); osc.stop(now + preset.dur + 0.02)
+      const clone = audio.cloneNode()
+      clone.volume = audio.volume
+      clone.preload = 'auto'
+      clone.play().catch(() => {})
     } catch (e) {}
   }
+
   function soundForLastMove(sanMove) {
-    if (chess.inCheck()) playSound('check')
-    else if (sanMove?.captured) playSound('capture')
-    else playSound('move')
+    if (!sanMove) return
+
+    const san = sanMove.san || ''
+    const isCapture = !!sanMove.captured
+    const isCheck = san.includes('+') || san.includes('#')
+    const isCastle = san.includes('O-O') || san.includes('0-0')
+    const isPromotion = !!sanMove.promotion
+
+    let primarySound = 'move'
+
+    if (isCapture) primarySound = 'capture'
+    else if (isCastle) primarySound = 'castle'
+    else if (isPromotion) primarySound = 'promote'
+
+    playSound(primarySound)
+
+    if (isCheck) {
+      setTimeout(() => playSound('check'), 120)
+    }
   }
 
   watch(showBestArrow, (val) => {
@@ -606,12 +625,17 @@
     lastMoveSquare.value = null
     lastMoveFromSquare.value = null
     lastMoveAccuracy.value = null
+
     if (currentNode.value.parent === null) return
+
     chess.undo()
     currentNode.value = currentNode.value.parent
     movesListUCI.value.pop()
     boardAPI.value.setPosition(chess.fen())
+
+    playSound('move')
   }
+  
   function redoMove() {
     lastMoveSquare.value = null
     lastMoveFromSquare.value = null
@@ -650,11 +674,24 @@
     color.value = " "
     getAccuracy()
   }
-  function goToStart() { jumpToNode(0) }
+  function goToStart() {
+    if (currentNode.value.id !== 0) {
+      playSound('move')
+      jumpToNode(0)
+    }
+  }
+
   function goToEnd() {
     let node = currentNode.value
-    while (node.children.length > 0) node = node.children[0]
-    jumpToNode(node.id)
+
+    while (node.children.length > 0) {
+      node = node.children[0]
+    }
+
+    if (node.id !== currentNode.value.id) {
+      playSound('move')
+      jumpToNode(node.id)
+    }
   }
   function resetBoard() {
     chess.reset()
