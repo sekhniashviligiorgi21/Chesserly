@@ -30,6 +30,7 @@
   const loading = ref(false)
   const error = ref(null)
   const info = ref(null) // non-error notes (e.g. Chess.com archive lag)
+  const showChessComDelayWarning = ref(false)
   const gameUci = ref([])
   const reviewMoves = ref([])
   const reviewIndex = ref(0)
@@ -144,7 +145,7 @@
   }
 
   async function fetchSavedGames() {
-    if (!currentUser.value) return
+    if (!currentUser.value) return 
     try {
       const q = query(
         collection(db, `users/${currentUser.value.uid}/games`),
@@ -231,7 +232,7 @@
   )
 
   // --- Helper to clean PGNs before chess.js parses them ---
-  function cleanPgn(pgn) {
+  function cleanPgn(pgn) { 
     if (!pgn) return ''
     let cleaned = pgn
       .replace(/\{[^}]*\}/g, ' ')   // Remove comments
@@ -275,15 +276,6 @@
     }
   }
 
-  // ---------------------------------------------------------------------
-  // Chess.com fetching, with freshness fixes:
-  //  1. `cache: 'no-store'` — never serve the response from the browser cache.
-  //  2. `?t=<timestamp>`  — bust Chess.com's CDN cache (each request is a
-  //     unique URL). Chess.com ignores unknown query params, so this is safe.
-  //     (Lichess rejects unknown params, so we do NOT add it there.)
-  //  3. "Last game" fetches the CURRENT month directly instead of trusting
-  //     the CDN-cached archives list, which can lag behind.
-  // ---------------------------------------------------------------------
   function bust(url) {
     return `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
   }
@@ -301,13 +293,10 @@
   }
 
   async function fetchChessComLast(user) {
-    // Chess.com files games by UTC month, so work in UTC.
     const now = new Date()
     let y = now.getUTCFullYear()
     let m = now.getUTCMonth() + 1
 
-    // Try the current month, then the previous month (covers the start of a
-    // new UTC month, and the 404s/empty months when a player hasn't played).
     const candidates = [[y, m]]
     m -= 1
     if (m === 0) { m = 12; y -= 1 }
@@ -322,7 +311,6 @@
       }
     }
 
-    // Last resort: no games in the last ~2 months, use the archives list.
     const data = await fetchChessComJson(`https://api.chess.com/pub/player/${user}/games/archives`)
     const archives = data.archives || []
     if (!archives.length) throw new Error('No games found for this player.')
@@ -360,9 +348,8 @@
     const c = new Chess()
     const cleanedPgn = cleanPgn(pgn)
 
-    // Helper to extract headers manually if standard parsing fails
     const extractHeader = (key) => {
-      const match = new RegExp(`\\[${key} "(.*?)"\\]`).exec(pgn)
+      const match = new RegExp(`\\[${key}\\s+"(.*?)"\\]`).exec(pgn)
       return match ? match[1] : ''
     }
 
@@ -391,7 +378,6 @@
       }
     }
 
-    // Fallback parser for malformed PGNs (e.g. missing half-moves)
     c.reset()
     const movesStr = cleanedPgn.replace(/\[.*?\]/gs, '').replace(/\d+\.(\.\.)?/g, ' ').replace(/(1-0|0-1|1\/2-1\/2|\*)/g, '').trim()
     const moves = movesStr.split(/\s+/).filter(m => m.length > 0)
@@ -404,16 +390,14 @@
         c.move(move)
         validMovesApplied++
       } catch (err) {
-        // Toggle turn to see if a move was skipped
         const fenParts = c.fen().split(' ')
         fenParts[1] = fenParts[1] === 'w' ? 'b' : 'w'
-        fenParts[3] = '-' // Remove en passant target square
+        fenParts[3] = '-'
         const newFen = fenParts.join(' ')
 
         try {
           const tempBoard = new Chess(newFen)
           tempBoard.move(move)
-          // It worked! Apply it to the main board
           c.load(newFen)
           c.move(move)
           validMovesApplied++
@@ -432,7 +416,6 @@
     const blackElo = extractHeader('BlackElo')
     const result = extractHeader('Result') || '*'
 
-    // Generate a clean PGN from the successfully parsed moves
     const cleanMovesPgn = c.pgn()
     const headerStr = `[White "${whiteName}"]\n[Black "${blackName}"]\n[Result "${result}"]${whiteElo ? `\n[WhiteElo "${whiteElo}"]` : ''}${blackElo ? `\n[BlackElo "${blackElo}"]` : ''}`
     const finalPgn = `${headerStr}\n\n${cleanMovesPgn} ${result}`.trim()
@@ -456,6 +439,7 @@
     loading.value = true
     error.value = null
     info.value = null
+    showChessComDelayWarning.value = false
     games.value = []
     selectedGame.value = null
     tcFilter.value = 'all'
@@ -482,15 +466,17 @@
           : await fetchLichessLast(username.value)
         games.value = lastGames
 
-        // Chess.com can take a few minutes to publish a just-finished game.
-        // If the newest published game is older than ~5 minutes, say so
-        // instead of silently looking broken.
         if (importSite.value === 'chess.com') {
           const lastDate = lastGames[0]?.date
           const ageMin = lastDate ? (Date.now() - lastDate.getTime()) / 60000 : Infinity
           if (ageMin > 5) {
-            info.value = 'Showing your most recent published game. Chess.com can takes some time to publish brand-new games — if yours is missing, you can paste the pgn of the game in the pgn tab.'
+            showChessComDelayWarning.value = true
+            info.value = "Chess.com's public API caches games for up to an hour. Your latest game may not have synced to their archive yet."
+          } else {
+            showChessComDelayWarning.value = false
           }
+        } else {
+          showChessComDelayWarning.value = false
         }
 
         if (lastGames.length) selectGame(lastGames[0])
@@ -499,7 +485,6 @@
         const fetched = importSite.value === 'chess.com'
           ? await fetchChessComRange(username.value, year.value, month.value)
           : await fetchLichessRange(username.value, year.value, month.value)
-        // Both APIs return oldest-first; show newest first instead.
         games.value = [...fetched].sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0))
       }
 
@@ -521,7 +506,6 @@
   }
 
   function selectGame(game) {
-    // Ensure the PGN is cleaned before processing to avoid chess.js errors
     if (game && game.pgn) {
       game.pgn = cleanPgn(game.pgn)
     }
@@ -565,8 +549,6 @@
       : { month: 'short', day: 'numeric', year: '2-digit' })
   }
 
-  // Chess.com result strings that mean the player LOST (timeout was missing
-  // before, so losses on time were displayed as draws).
   const LOSS_RESULTS = ['resigned', 'checkmated', 'abandoned', 'lose', 'timeout', 'kingofthehill', 'threecheck', 'bughousepartnerlose']
 
   function formatResult(game) {
@@ -574,8 +556,6 @@
     const whiteUsername = (game.white?.username || '').toLowerCase()
     const blackUsername = (game.black?.username || '').toLowerCase()
 
-    // Only trust the color match if the username actually matches a player;
-    // otherwise default to White's perspective.
     const matched = myUsername && (whiteUsername === myUsername || blackUsername === myUsername)
     const isWhite = matched ? whiteUsername === myUsername : true
 
@@ -595,7 +575,7 @@
     return {
       opponent: opponent.username || 'Unknown',
       result,
-      outcome,
+      outcome, 
       myColor: isWhite ? 'White' : 'Black',
       myRating: me.rating || 0,
       oppRating: opponent.rating || 0
@@ -614,7 +594,6 @@
 
     const moveString = gameUci.value.join('-')
 
-    // Determine the user's actual color by matching usernames
     const myUsername = (username.value || '').trim().toLowerCase()
     const whiteUsername = (selectedGame.value.white?.username || '').toLowerCase()
     const blackUsername = (selectedGame.value.black?.username || '').toLowerCase()
@@ -645,7 +624,6 @@
           <h1 class="import-title">Import a game</h1>
           <p class="import-subtitle">Pull a game from Chess.com or Lichess, paste PGN/FEN, or browse your library.</p>
         </div>
-
         <div class="site-toggle">
           <button class="site-btn" :class="{ active: importSite === 'chess.com' }" @click="importSite = 'chess.com'">Chess.com</button>
           <button class="site-btn" :class="{ active: importSite === 'lichess' }" @click="importSite = 'lichess'">Lichess</button>
@@ -653,19 +631,16 @@
           <button class="site-btn" :class="{ active: importSite === 'fen' }" @click="importSite = 'fen'">FEN</button>
           <button class="site-btn" :class="{ active: importSite === 'library' }" @click="importSite = 'library'">My Library</button>
         </div>
-
         <div v-if="importSite === 'library' && !currentUser" class="empty-library">
           Please log in from the top right corner to access your saved games.
         </div>
         <div v-else-if="importSite === 'library' && savedGames.length === 0" class="empty-library">
           Your library is empty. Analyze a game and it will be saved here automatically.
         </div>
-
         <div class="mode-toggle" v-if="!isPasteSource">
           <button class="mode-btn" :class="{ active: importMode === 'last' }" @click="importMode = 'last'">Last game</button>
           <button class="mode-btn" :class="{ active: importMode === 'range' }" @click="importMode = 'range'">By month</button>
         </div>
-
         <div class="controls" v-if="!isPasteSource">
           <label class="field">
             <span class="field-label">Username</span>
@@ -702,7 +677,6 @@
             {{ loading ? 'Fetching…' : (importMode === 'last' ? 'Get last game' : 'Search games') }}
           </button>
         </div>
-
         <div class="paste-controls" v-if="importSite === 'pgn'">
           <label class="field">
             <span class="field-label">PGN</span>
@@ -713,7 +687,6 @@
             {{ loading ? 'Parsing…' : 'Load PGN' }}
           </button>
         </div>
-
         <div class="paste-controls" v-if="importSite === 'fen'">
           <label class="field">
             <span class="field-label">FEN</span>
@@ -724,11 +697,16 @@
             {{ loading ? 'Loading…' : 'Load FEN' }}
           </button>
         </div>
-
         <div v-if="error" class="error">{{ error }}</div>
-        <div v-if="info" class="info-note">{{ info }}</div>
+        <div v-if="info" class="info-note">
+          {{ info }}
+          <div v-if="showChessComDelayWarning" class="delay-action">
+            <button class="pgn-switch-btn" @click="importSite = 'pgn'">
+              📋 Paste PGN instead (Instant)
+            </button>
+          </div>
+        </div>
         <div v-if="saveStatus" class="save-toast">{{ saveStatus }}</div>
-
         <!-- Results browser: shared by fetched games and My Library -->
         <div v-if="activeSource.length" class="results">
           <div class="results-meta">
@@ -742,7 +720,6 @@
               <span class="rec-d">{{ overallStats.d }}D</span>
             </span>
           </div>
-
           <div class="results-toolbar" v-if="activeSource.length > 1">
             <div class="tc-chips">
               <button
@@ -757,7 +734,6 @@
             </div>
             <input v-model="opponentSearch" class="input search-input" placeholder="Filter by player…" />
           </div>
-
           <div class="games-list">
             <section v-for="group in displayedGroups" :key="group.key" class="tc-group">
               <header class="tc-group-header">
@@ -786,10 +762,8 @@
               </div>
             </section>
           </div>
-
           <div v-if="filteredGames.length === 0" class="empty">No games match your filters.</div>
         </div>
-
         <div v-if="selectedGame && importSite !== 'fen'" class="selection-bar">
           <div class="selection-info">
             <span class="selected-msg">Game ready</span>
@@ -860,48 +834,48 @@
   .import-subtitle { color: rgba(244, 240, 227, 0.72); font-size: 0.85rem; margin: 0; }
 
   .site-toggle, .mode-toggle {
-      display: flex;
-      flex-wrap: wrap;         
-      gap: 0.4rem;
-      background: rgba(0, 0, 0, 0.2);
-      padding: 0.3rem;
-      border-radius: 10px;
+    display: flex;
+    flex-wrap: wrap;         
+    gap: 0.4rem;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 0.3rem;
+    border-radius: 10px;
   }
 
   .site-btn, .mode-btn {
-      flex: 1 1 auto;            
-      min-width: 0;           
-      padding: 0.5rem 0.6rem;
-      border: none;
-      border-radius: 8px;
-      background: transparent;
-      color: rgba(244, 240, 227, 0.65);
-      font-weight: 600;
-      font-size: 0.85rem;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    flex: 1 1 auto;            
+    min-width: 0;           
+    padding: 0.5rem 0.6rem; 
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: rgba(244, 240, 227, 0.65);
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .site-btn:hover, .mode-btn:hover { color: #f4f0e3; }
 
   .site-btn.active, .mode-btn.active {
-      background: var(--btn-active);
-      color: #f5f5dc;
-      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+    background: var(--btn-active);
+    color: #f5f5dc;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
   }
 
   @media (max-width: 480px) {
-      .site-toggle, .mode-toggle {
-          gap: 0.3rem;
-          padding: 0.25rem;
-      }
-      .site-btn, .mode-btn {
-          font-size: 0.78rem;
-          padding: 0.45rem 0.5rem;
-      }
+    .site-toggle, .mode-toggle {
+      gap: 0.3rem;
+      padding: 0.25rem;
+    }
+    .site-btn, .mode-btn { 
+      font-size: 0.78rem;
+      padding: 0.45rem 0.5rem;
+    }
   }
 
   .controls { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: flex-end; }
@@ -910,7 +884,7 @@
   .textarea { resize: vertical; font-family: "JetBrains Mono", monospace; font-size: 0.82rem; line-height: 1.4; }
   .textarea-fen { resize: none; }
 
-  .field { display: flex; flex-direction: column; gap: 0.3rem; flex: 1 1 10rem; min-width: 0; }
+  .field { display: flex; flex-direction: column; gap: 0.3rem; flex: 1 1 10rem; min-width: 0; } 
   .field-small { flex: 1 1 5rem; }
 
   .field-label {
@@ -946,7 +920,7 @@
     -webkit-appearance: none;
     -moz-appearance: none;
     padding-right: 2.5rem;
-    cursor: pointer;
+    cursor: pointer; 
     width: 100%;
   }
 
@@ -978,7 +952,7 @@
     background: var(--btn-active);
     color: #f4f0e3;
     border: none;
-    font-weight: 600;
+    font-weight: 600; 
     font-size: 0.9rem;
     cursor: pointer;
     transition: background 0.2s ease;
@@ -1015,6 +989,33 @@
     border-radius: 8px;
     padding: 0.5rem 0.7rem;
     font-size: 0.82rem;
+  }
+
+  .delay-action {
+    margin-top: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    align-items: center;
+    border-top: 1px solid rgba(217, 179, 106, 0.2);
+    padding-top: 0.6rem;
+  }
+
+  .pgn-switch-btn {
+    background: var(--btn-active);
+    color: #f4f0e3;
+    border: none;
+    padding: 0.45rem 0.9rem;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+
+  .pgn-switch-btn:hover {
+    background: var(--btn-idle);
   }
 
   .save-toast {
