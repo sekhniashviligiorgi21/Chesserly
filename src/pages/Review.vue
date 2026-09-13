@@ -469,7 +469,7 @@
         if (importSite.value === 'chess.com') {
           const lastDate = lastGames[0]?.date
           const ageMin = lastDate ? (Date.now() - lastDate.getTime()) / 60000 : Infinity
-          if (ageMin > 5) {
+          if (ageMin > 1) {
             showChessComDelayWarning.value = true
             info.value = "Chess.com's public API caches games for up to an hour. Your latest game may not have synced to their archive yet."
           } else {
