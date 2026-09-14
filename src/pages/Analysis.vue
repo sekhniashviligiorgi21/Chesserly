@@ -44,6 +44,9 @@
     } else {
       await getAccuracy()
     }
+
+    recalcCapturedPieces()
+    rebuildEvalHistory()
   })
 
   onBeforeUnmount(() => {
@@ -52,6 +55,7 @@
     window.removeEventListener('scroll', closeContextMenu, true)
     clearTimeout(toastTimeout)
     clearTimeout(longPressTimer)
+    document.body.style.overflow = ''
   })
 
   const route = useRoute()
@@ -122,10 +126,7 @@
 
   function loadStoredBestArrowSetting() {
     const stored = localStorage.getItem(BEST_ARROW_STORAGE_KEY)
-
-    // Default to true if never saved
     if (stored === null) return true
-
     return stored === 'true'
   }
 
@@ -133,9 +134,7 @@
 
   watch(showBestArrow, (enabled) => {
     localStorage.setItem(BEST_ARROW_STORAGE_KEY, String(enabled))
-
     if (!boardAPI.value) return
-
     if (!enabled) {
       boardAPI.value.hideMoves()
     } else {
@@ -151,10 +150,6 @@
   }
 
   function handleBoardClick() {
-    // When the user clicks the board, chessground's default behavior is to clear 
-    // ALL drawings (both user-drawn and app-drawn). 
-    // By redrawing the app arrow immediately after the click, we make it persistent,
-    // while user-drawn arrows remain erased.
     nextTick(() => {
       drawBestArrow()
     })
@@ -174,7 +169,6 @@
 
   function requestAnalysisForNewMove() {
     if (isImporting.value) return
-
     if (!isEngineEnabled.value) {
       isEngineEnabled.value = true
     } else {
@@ -586,6 +580,184 @@
     await tryLoadImportedGame()
   }
 
+  // ===== CAPTURED PIECES & MATERIAL ADVANTAGE ==============================
+  const PIECE_UNICODE = {
+    wp: '♙', wn: '♘', wb: '♗', wr: '♖', wq: '♕',
+    bp: '♟', bn: '♞', bb: '♝', br: '♜', bq: '♛'
+  }
+  const PIECE_MATERIAL = { p: 1, n: 3, b: 3, r: 5, q: 9 }
+
+  const capturedByWhite = ref([])
+  const capturedByBlack = ref([])
+  const materialDiff = ref(0)
+
+  function recalcCapturedPieces() {
+    const wCap = []
+    const bCap = []
+    let wMat = 0, bMat = 0
+
+    const uciPath = []
+    let n = currentNode.value
+    while (n.parent !== null) { uciPath.unshift(n.uci); n = n.parent }
+
+    const tracker = new Chess()
+    if (moveTree.fen && moveTree.fen !== 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1') {
+      try { tracker.load(moveTree.fen) } catch (e) { tracker.reset() }
+    }
+
+    for (const uci of uciPath) {
+      let m
+      try { m = tracker.move(uci) } catch (e) { break }
+      if (m && m.captured) {
+        const capturedColor = m.color === 'w' ? 'b' : 'w'
+        const key = capturedColor + m.captured
+        if (m.color === 'w') {
+          wCap.push(key)
+          wMat += PIECE_MATERIAL[m.captured] || 0
+        } else {
+          bCap.push(key)
+          bMat += PIECE_MATERIAL[m.captured] || 0
+        }
+      }
+    }
+
+    const sortDesc = (a, b) => (PIECE_MATERIAL[b[1]] || 0) - (PIECE_MATERIAL[a[1]] || 0)
+    capturedByWhite.value = wCap.sort(sortDesc)
+    capturedByBlack.value = bCap.sort(sortDesc)
+    materialDiff.value = wMat - bMat
+  }
+
+  // ===== EVALUATION HISTORY GRAPH (Lichess-style area chart) =============
+  const EVAL_GRAPH_W = 1000
+  const EVAL_GRAPH_H = 300
+  const evalHistory = ref([])
+
+  function rebuildEvalHistory() {
+    const history = [{ ply: 0, cp: 0, graphCp: 0, accuracy: null, nodeId: 0, san: null }]
+    let node = moveTree.children[0] ?? null
+    let ply = 1
+    while (node) {
+      const data = node.analysisData
+      let cp = 0, graphCp = 0
+      if (data?.eval) {
+        if (data.eval.type === 'cp') {
+          cp = data.eval.value
+          graphCp = Math.max(-1500, Math.min(1500, cp))
+        } else if (data.eval.type === 'mate') {
+          cp = data.eval.value > 0 ? 800 : -800
+          graphCp = data.eval.value > 0 ? 1500 : -1500
+        }
+      }
+      history.push({ ply, cp, graphCp, accuracy: node.accuracy || null, nodeId: node.id, san: node.san })
+      node = node.children[0] ?? null
+      ply++
+    }
+    evalHistory.value = history
+  }
+
+  function evalGraphY(graphCp) {
+    const p = 1 / (1 + Math.exp(-graphCp / 300))
+    return EVAL_GRAPH_H * (1 - p)
+  }
+
+  const evalGraphGeom = computed(() => {
+    const pts = evalHistory.value
+    if (pts.length < 2) return null
+    const step = EVAL_GRAPH_W / (pts.length - 1)
+    const coords = pts.map((pt, i) => {
+      const y = evalGraphY(pt.graphCp)
+      return {
+        ...pt,
+        x: i * step,
+        y,
+        xPct: ((i * step) / EVAL_GRAPH_W) * 100,
+        yPct: (y / EVAL_GRAPH_H) * 100
+      }
+    })
+    const line = coords.map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ')
+    const whiteArea = `${line} L${EVAL_GRAPH_W},${EVAL_GRAPH_H} L0,${EVAL_GRAPH_H} Z`
+    const blackArea = `${line} L${EVAL_GRAPH_W},0 L0,0 Z`
+    const currentIdx = coords.findIndex(c => c.nodeId === currentNode.value.id)
+    return { coords, line, whiteArea, blackArea, currentIdx }
+  })
+
+  function evalGraphClick(event) {
+    const geom = evalGraphGeom.value
+    if (!geom) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    const idx = Math.round(ratio * (geom.coords.length - 1))
+    const target = geom.coords[idx]
+    if (target) jumpToNode(target.nodeId)
+  }
+
+  function evalDotTitle(pt) {
+    if (pt.ply === 0) return 'Start · 0.00'
+    const num = Math.ceil(pt.ply / 2)
+    const suffix = pt.ply % 2 === 1 ? '.' : '...'
+    const evalStr = `${pt.cp > 0 ? '+' : ''}${(pt.cp / 100).toFixed(2)}`
+    return `${num}${suffix} ${pt.san || ''} · ${evalStr}${pt.accuracy ? ' · ' + pt.accuracy : ''}`
+  }
+
+  // ===== AUTO-SCROLL MOVES LIST ============================================
+  watch(currentNode, () => {
+    recalcCapturedPieces()
+    rebuildEvalHistory()
+    nextTick(() => {
+      if (!movesListRef.value) return
+      const active = movesListRef.value.querySelector('.move-cell.active')
+      if (active) active.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+  })
+  watch(treeVersion, () => { rebuildEvalHistory() })
+
+  // ===== KEYBOARD SHORTCUTS HELP ===========================================
+  const showShortcuts = ref(false)
+  const shortcuts = [
+    { keys: '← / →', desc: 'Previous / Next move' },
+    { keys: 'Home / End', desc: 'Jump to start / end' },
+    { keys: 'F', desc: 'Flip board' },
+    { keys: 'S', desc: 'Toggle settings' },
+    { keys: 'E', desc: 'Toggle engine' },
+    { keys: '?', desc: 'Show / hide this panel' },
+    { keys: 'Esc', desc: 'Close menus / minimize report' },
+  ]
+  function toggleShortcuts() { showShortcuts.value = !showShortcuts.value }
+
+  // ===== MOVE NOTES ========================================================
+  const editingNoteNodeId = ref(null)
+  const noteDraft = ref('')
+
+  function openNoteEditor(nodeId) {
+    const node = nodeMap[nodeId]
+    if (!node) return
+    editingNoteNodeId.value = nodeId
+    noteDraft.value = node.note || ''
+  }
+
+  function saveNote() {
+    if (editingNoteNodeId.value === null) return
+    const node = nodeMap[editingNoteNodeId.value]
+    if (node) {
+      node.note = noteDraft.value.trim() || null
+      treeVersion.value++
+    }
+    editingNoteNodeId.value = null
+    noteDraft.value = ''
+  }
+
+  function cancelNote() {
+    editingNoteNodeId.value = null
+    noteDraft.value = ''
+  }
+
+  // ===== REPORT MAXIMIZE ===================================================
+  const isReportMaximized = ref(false)
+  function toggleReportMaximize() { isReportMaximized.value = !isReportMaximized.value }
+  watch(isReportMaximized, (max) => {
+    document.body.style.overflow = max ? 'hidden' : ''
+  })
+
   function handleBothMoves(move) {
     if (isImporting.value) return
 
@@ -619,6 +791,7 @@
     }
 
     movesListUCI.value.push(uci)
+    recalcCapturedPieces()
     requestAnalysisForNewMove()
   }
 
@@ -635,6 +808,7 @@
     boardAPI.value.setPosition(chess.fen())
 
     playSound('move')
+    recalcCapturedPieces()
   }
 
   function redoMove() {
@@ -649,6 +823,7 @@
     movesListUCI.value.push(nextNode.uci)
     currentNode.value = nextNode
     boardAPI.value.setPosition(nextNode.fen)
+    recalcCapturedPieces()
   }
   function undoAccuracy() { undoMove(); getAccuracy() }
   function redoAccuracy() { redoMove(); getAccuracy() }
@@ -673,6 +848,7 @@
     moveData.value = null
     isAccuracy.value = " "
     color.value = " "
+    recalcCapturedPieces()
     getAccuracy()
   }
   function goToStart() {
@@ -704,6 +880,9 @@
     nodeIdCounter = 1
     for (const key in nodeMap) if (parseInt(key) !== 0) delete nodeMap[key]
     treeVersion.value++
+    capturedByWhite.value = []
+    capturedByBlack.value = []
+    materialDiff.value = 0
     getAccuracy()
   }
   function resetAccuracy() { resetBoard(); isAccuracy.value = " "; color.value = " "; moveData.value = null }
@@ -719,7 +898,6 @@
       ? targetDepth.value
       : Math.min(targetDepth.value, 20)
 
-    // If engine is OFF and we have cache, just show cache and return
     if (!isImporting.value && !isEngineEnabled.value && cached) {
       moveData.value = cached
       lastMoveSquare.value = movesListUCI.value.at(-1)?.slice(2, 4) ?? null
@@ -964,19 +1142,40 @@
     movesListUCI.value.push(uci)
     boardAPI.value.setPosition(chess.fen())
     treeVersion.value++
+    recalcCapturedPieces()
     requestAnalysisForNewMove()
   }
 
   const handleKeyDown = (event) => {
     const delay = 200
     const currentTime = Date.now()
-    if (event.repeat) return
+    const tag = event.target?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+    if (event.key === 'Escape') {
+      closeContextMenu()
+      showShortcuts.value = false
+      editingNoteNodeId.value = null
+      if (isReportMaximized.value) isReportMaximized.value = false
+      return
+    }
+
+    if (event.key === '?') {
+      event.preventDefault()
+      toggleShortcuts()
+      return
+    }
+
     if (isImporting.value) return
+
     switch (event.key) {
-      case 'ArrowLeft': if (currentTime - lastPress < delay) return; lastPress = currentTime; undoAccuracy(); break
-      case 'ArrowRight': if (currentTime - lastPress < delay) return; lastPress = currentTime; redoAccuracy(); break
+      case 'ArrowLeft': if (currentTime - lastPress < delay) return; lastPress = currentTime; event.preventDefault(); undoAccuracy(); break
+      case 'ArrowRight': if (currentTime - lastPress < delay) return; lastPress = currentTime; event.preventDefault(); redoAccuracy(); break
       case 'Home': event.preventDefault(); goToStart(); break
       case 'End': event.preventDefault(); goToEnd(); break
+      case 'f': case 'F': event.preventDefault(); flipBoard(); break
+      case 's': case 'S': event.preventDefault(); isSettingsOpen.value = !isSettingsOpen.value; break
+      case 'e': case 'E': event.preventDefault(); isEngineEnabled.value = !isEngineEnabled.value; break
     }
   }
 
@@ -1009,6 +1208,7 @@
       if (!isImporting.value) treeVersion.value++
     }
     movesListUCI.value.push(normalizedUci)
+    recalcCapturedPieces()
     return sanMove
   }
 
@@ -1067,7 +1267,6 @@
   }
   async function tryLoadImportedGame() {
     if (boardReady && engineReady && route.query.moves) {
-      // Auto-rotate board based on the user's color
       const myColor = route.query.myColor
       if (myColor === 'black' && !isFlipped.value) {
         flipBoard()
@@ -1516,6 +1715,205 @@
       return "Unknown Opening"
     }
   }
+
+  // ===== PER-GAME EXTENDED REPORT STATS ====================================
+  const moveBucketOrderLocal = ['1-10', '11-20', '21-30', '31-40', '41+']
+
+  function toCpLocal(ev) {
+    if (!ev) return null
+    if (ev.type === 'mate') return Math.sign(ev.value) * 10000
+    return ev.value
+  }
+
+  function accColorForWeight(w) {
+    if (w === null || w === undefined) return 'rgba(244,240,227,0.4)'
+    if (w >= 95) return '#6ad13f'
+    if (w >= 85) return '#90bc36'
+    if (w >= 70) return '#8eae83'
+    if (w >= 45) return '#f2bc43'
+    if (w >= 20) return '#f38800'
+    return '#FF0000'
+  }
+
+  function fmtAcc(v) {
+    return v === null || v === undefined ? '—' : v.toFixed(1) + '%'
+  }
+
+  const gameExtendedStats = computed(() => {
+    treeVersion.value
+    const uciList = []
+    let cur = moveTree.children[0] ?? null
+    while (cur) { uciList.push(cur.uci); cur = cur.children[0] ?? null }
+    if (uciList.length === 0) return null
+
+    const phases = getGamePhases(uciList)
+    const mkSide = () => ({
+      checks: 0, captures: 0, cpLost: 0, swingsGained: 0,
+      buckets: {},
+      phases: { opening: { sum: 0, count: 0 }, middlegame: { sum: 0, count: 0 }, endgame: { sum: 0, count: 0 } },
+      badSquares: {}, goodSquares: {}
+    })
+    const white = mkSide(), black = mkSide()
+
+    let prev = moveTree
+    let node = moveTree.children[0] ?? null
+    let ply = 1
+    while (node) {
+      const side = ply % 2 === 1 ? white : black
+      const other = ply % 2 === 1 ? black : white
+      const w = node.accuracy ? (accuracyWeights[node.accuracy] ?? null) : null
+      const before = toCpLocal(prev.analysisData?.eval)
+      const after = toCpLocal(node.analysisData?.eval)
+      const persp = ply % 2 === 1 ? 1 : -1
+      const delta = (before !== null && after !== null) ? (after - before) * persp : null
+
+      if (node.san?.includes('+') || node.san?.includes('#')) side.checks++
+      if (node.san?.includes('x')) side.captures++
+
+      if (delta !== null) {
+        if (delta < 0) side.cpLost += Math.min(-delta, 1000)
+        if (delta <= -150) other.swingsGained++
+      }
+
+      if (w !== null) {
+        const label = bucketLabel(Math.ceil(ply / 2))
+        if (!side.buckets[label]) side.buckets[label] = { sum: 0, count: 0 }
+        side.buckets[label].sum += w
+        side.buckets[label].count++
+
+        for (const [phase, [start, end]] of Object.entries(phases)) {
+          if (ply > start && ply <= end) {
+            side.phases[phase].sum += w
+            side.phases[phase].count++
+          }
+        }
+      }
+
+      prev = node
+      node = node.children[0] ?? null
+      ply++
+    }
+
+    const finalizeSide = (s) => ({
+      ...s,
+      cpLost: Math.round(s.cpLost / 100),
+      buckets: moveBucketOrderLocal.map(label => {
+        const b = s.buckets[label]
+        return { label, acc: b && b.count ? b.sum / b.count : null, count: b ? b.count : 0 }
+      }),
+      phases: Object.fromEntries(['opening', 'middlegame', 'endgame'].map(key => {
+        const p = s.phases[key]
+        return [key, p.count ? p.sum / p.count : null]
+      }))
+    })
+
+    return { white: finalizeSide(white), black: finalizeSide(black), totalPlies: uciList.length }
+  })
+
+  const reportBars = computed(() => {
+    treeVersion.value
+    return ['white', 'black'].map(sideKey => {
+      const counts = gameReportStats.value[sideKey].counts
+      const total = Object.values(counts).reduce((a, b) => a + b, 0)
+      const segments = classificationOrder
+        .map(key => ({ key, count: counts[key], meta: classificationMeta[key], percent: total ? (counts[key] / total) * 100 : 0 }))
+        .filter(s => s.count > 0)
+      return { side: sideKey, total, segments }
+    })
+  })
+
+  const keyMoments = computed(() => {
+    treeVersion.value
+    const moments = []
+    let prev = moveTree
+    let node = moveTree.children[0] ?? null
+    let ply = 1
+    while (node) {
+      const before = toCpLocal(prev.analysisData?.eval)
+      const after = toCpLocal(node.analysisData?.eval)
+      const persp = ply % 2 === 1 ? 1 : -1
+      if (before !== null && after !== null && node.accuracy) {
+        const delta = (after - before) * persp
+        const isError = ['blunder', 'mistake', 'inaccuracy'].includes(node.accuracy)
+        const isStar = ['brilliant', 'great'].includes(node.accuracy)
+        if (isError || isStar) {
+          moments.push({
+            nodeId: node.id, ply, san: node.san,
+            side: ply % 2 === 1 ? 'white' : 'black',
+            accuracy: node.accuracy,
+            swing: Math.abs(delta)
+          })
+        }
+      }
+      prev = node
+      node = node.children[0] ?? null
+      ply++
+    }
+    return moments.sort((a, b) => b.swing - a.swing).slice(0, 8)
+  })
+
+  function jumpToMoment(m) {
+    isReportMaximized.value = false
+    jumpToNode(m.nodeId)
+  }
+
+  // ===== JUMP TO FIRST MOVE OF A CLASSIFICATION ============================
+  function jumpToClassification(side, key) {
+    const stats = gameReportStats.value
+    if (!stats || !stats[side] || stats[side].counts[key] === 0) return
+    let node = moveTree.children[0] ?? null
+    let ply = 1
+    while (node) {
+      const nodeSide = ply % 2 === 1 ? 'white' : 'black'
+      if (nodeSide === side && node.accuracy === key) {
+        if (isReportMaximized.value) isReportMaximized.value = false
+        jumpToNode(node.id)
+        return
+      }
+      node = node.children[0] ?? null
+      ply++
+    }
+  }
+
+  // ===== PER-GAME PIECE ACCURACY ===========================================
+  const pieceMetaLocal = [
+    { key: 'p', label: 'Pawn', symbol: '♟' },
+    { key: 'n', label: 'Knight', symbol: '♞' },
+    { key: 'b', label: 'Bishop', symbol: '♝' },
+    { key: 'r', label: 'Rook', symbol: '♜' },
+    { key: 'q', label: 'Queen', symbol: '♛' },
+    { key: 'k', label: 'King', symbol: '♚' }
+  ]
+
+  const gamePieceStats = computed(() => {
+    treeVersion.value
+    const mk = () => Object.fromEntries(pieceMetaLocal.map(p => [p.key, { count: 0, sum: 0 }]))
+    const white = mk()
+    const black = mk()
+    let node = moveTree.children[0] ?? null
+    let ply = 1
+    while (node) {
+      const side = ply % 2 === 1 ? white : black
+      const w = node.accuracy ? (accuracyWeights[node.accuracy] ?? null) : null
+      if (w !== null && node.san) {
+        let piece = 'p'
+        const firstChar = node.san[0]
+        if (['N', 'B', 'R', 'Q', 'K'].includes(firstChar)) piece = firstChar.toLowerCase()
+        if (side[piece]) {
+          side[piece].count++
+          side[piece].sum += w
+        }
+      }
+      node = node.children[0] ?? null
+      ply++
+    }
+    const avg = (s) => s.count > 0 ? s.sum / s.count : null
+    return pieceMetaLocal.map(p => ({
+      ...p,
+      white: { count: white[p.key].count, acc: avg(white[p.key]) },
+      black: { count: black[p.key].count, acc: avg(black[p.key]) }
+    }))
+  })
 </script>
 
 <template>
@@ -1555,11 +1953,27 @@
 
     <div class="board-area">
       <div class="board-wrapper" ref="boardRef" :style="{ '--last-move-highlight': lastMoveHighlightColor}" @click="handleBoardClick" @touchend="handleBoardClick">
+
+        <!-- TOP player bar -->
         <div class="player-bar" v-if="hasPlayerInfo">
           <span class="player-color-dot" :class="topPlayer.side"></span>
           <span class="player-name">{{ topPlayer.name }}</span>
           <span v-if="topPlayer.isWinner" class="winner-crown">👑</span>
           <span class="player-rating" v-if="topPlayer.rating">{{ topPlayer.rating }}</span>
+          <span
+            class="captured-pieces"
+            v-if="(topPlayer.side === 'white' ? capturedByWhite : capturedByBlack).length"
+          >
+            <span
+              v-for="(p, i) in (topPlayer.side === 'white' ? capturedByWhite : capturedByBlack)"
+              :key="'tc-' + i"
+              class="captured-piece"
+            >{{ PIECE_UNICODE[p] }}</span>
+            <span
+              class="material-badge"
+              v-if="topPlayer.side === 'white' ? materialDiff > 0 : materialDiff < 0"
+            >+{{ Math.abs(materialDiff) }}</span>
+          </span>
         </div>
 
         <div class="board-row">
@@ -1587,14 +2001,33 @@
           </div>
         </div>
 
+        <!-- BOTTOM player bar -->
         <div class="player-bar bottom" v-if="hasPlayerInfo">
           <span class="player-color-dot" :class="bottomPlayer.side"></span>
           <span class="player-name">{{ bottomPlayer.name }}</span>
           <span v-if="bottomPlayer.isWinner" class="winner-crown">👑</span>
           <span class="player-rating" v-if="bottomPlayer.rating">{{ bottomPlayer.rating }}</span>
+          <span
+            class="captured-pieces"
+            v-if="(bottomPlayer.side === 'white' ? capturedByWhite : capturedByBlack).length"
+          >
+            <span
+              v-for="(p, i) in (bottomPlayer.side === 'white' ? capturedByWhite : capturedByBlack)"
+              :key="'bc-' + i"
+              class="captured-piece"
+            >{{ PIECE_UNICODE[p] }}</span>
+            <span
+              class="material-badge"
+              v-if="bottomPlayer.side === 'white' ? materialDiff > 0 : materialDiff < 0"
+            >+{{ Math.abs(materialDiff) }}</span>
+          </span>
         </div>
 
         <div class="boardtools">
+          <div class="boardtools-left">
+            <button class="toolbar-icon-btn" @click="toggleShortcuts" title="Keyboard shortcuts (?)">?</button>
+          </div>
+
           <div class="boardtools-nav">
             <button class="jumpstart" @click="goToStart" :disabled="isImporting || currentNode.parent === null" title="Jump to start">&lt;&lt;</button>
             <button class="undo" @click="undoAccuracy" title="previous" :disabled="isImporting || currentNode.parent === null">&lt;-</button>
@@ -1732,6 +2165,7 @@
                 class="move-cell"
                 :class="[{ active: cell && cell.node === currentNode, variant: cell && cell.variant }, { empty: !cell }]"
                 @click="cell && handleCellClick(cell.node.id)"
+                @dblclick="cell && openNoteEditor(cell.node.id)"
                 @contextmenu.prevent="cell && openContextMenu($event, cell.node.id)"
                 @touchstart="cell && handleTouchStart($event, cell.node.id)"
                 @touchend="cancelLongPress"
@@ -1740,6 +2174,7 @@
                 <template v-if="cell">
                   <span v-if="cell.showNum" class="move-num">{{ cell.displayNum }}{{ cell.isWhite ? '.' : '...' }}</span>
                   <span class="move-san-text">{{ cell.node.san }}</span>
+                  <span v-if="cell.node.note" class="note-indicator" title="Has note">📝</span>
                   <img
                     v-if="cell.node.accuracy"
                     :src="accuracySymbol(cell.node.accuracy)"
@@ -1752,79 +2187,248 @@
           </template>
         </div>
 
-        <div class="report" v-else-if="activeTab === 'report'">
-          <div class="report-columns">
-            <div class="report-col">
-              <div class="report-side-header">
-                <span class="side-swatch white-swatch"></span>
-                <span>White</span>
-              </div>
-
-              <div class="accuracy-score" v-if="gameReportStats.white.accuracy !== null">
-                {{ gameReportStats.white.accuracy.toFixed(1) }}
-                <span class="accuracy-percent">%</span>
-              </div>
-              <div class="accuracy-score empty" v-else>—</div>
-
-              <div class="est-rating" v-if="estimatedRatings.white !== null">
-                <span class="est-rating-label">Est. Rating</span>
-                <span class="est-rating-value">{{ estimatedRatings.white }}</span>
-              </div>
-              <div class="est-rating empty" v-else>
-                <span class="est-rating-label">Est. Rating</span>
-                <span class="est-rating-value">—</span>
-              </div>
-
-              <div
-                v-for="key in classificationOrder"
-                :key="'w-' + key"
-                class="report-row"
-                :class="{ dim: gameReportStats.white.counts[key] === 0 }"
+        <!-- ============ REPORT (teleported to body when maximized) ============ -->
+        <Teleport to="body" :disabled="!isReportMaximized" v-else-if="activeTab === 'report'">
+          <div class="report" :class="{ maximized: isReportMaximized }">
+            <div class="report-header">
+              <h3 class="report-title">Game Report</h3>
+              <button
+                class="report-expand-btn"
+                @click="toggleReportMaximize"
+                :title="isReportMaximized ? 'Minimize report (Esc)' : 'Maximize report'"
               >
-                <img :src="accuracySymbol(key)" class="report-row-icon" />
-                <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
-                  {{ classificationMeta[key].label }}
-                </span>
-                <span class="report-row-count">{{ gameReportStats.white.counts[key] }}</span>
+                <svg v-if="!isReportMaximized" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+              </button>
+            </div>
+
+            <div class="report-columns">
+              <div class="report-col">
+                <div class="report-side-header">
+                  <span class="side-swatch white-swatch"></span>
+                  <span>White</span>
+                </div>
+
+                <div class="accuracy-score" v-if="gameReportStats.white.accuracy !== null">
+                  {{ gameReportStats.white.accuracy.toFixed(1) }}
+                  <span class="accuracy-percent">%</span>
+                </div>
+                <div class="accuracy-score empty" v-else>—</div>
+
+                <div class="est-rating" v-if="estimatedRatings.white !== null">
+                  <span class="est-rating-label">Est. Rating</span>
+                  <span class="est-rating-value">{{ estimatedRatings.white }}</span>
+                </div>
+                <div class="est-rating empty" v-else>
+                  <span class="est-rating-label">Est. Rating</span>
+                  <span class="est-rating-value">—</span>
+                </div>
+
+                <div
+                  v-for="key in classificationOrder"
+                  :key="'w-' + key"
+                  class="report-row"
+                  :class="{
+                    dim: gameReportStats.white.counts[key] === 0,
+                    clickable: gameReportStats.white.counts[key] > 0
+                  }"
+                  :title="gameReportStats.white.counts[key] > 0 ? 'Jump to first ' + classificationMeta[key].label + ' move' : ''"
+                  @click="jumpToClassification('white', key)"
+                >
+                  <img :src="accuracySymbol(key)" class="report-row-icon" />
+                  <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
+                    {{ classificationMeta[key].label }}
+                  </span>
+                  <span class="report-row-count">{{ gameReportStats.white.counts[key] }}</span>
+                </div>
+              </div>
+
+              <div class="report-col">
+                <div class="report-side-header">
+                  <span class="side-swatch black-swatch"></span>
+                  <span>Black</span>
+                </div>
+
+                <div class="accuracy-score" v-if="gameReportStats.black.accuracy !== null">
+                  {{ gameReportStats.black.accuracy.toFixed(1) }}
+                  <span class="accuracy-percent">%</span>
+                </div>
+                <div class="accuracy-score empty" v-else>—</div>
+
+                <div class="est-rating" v-if="estimatedRatings.black !== null">
+                  <span class="est-rating-label">Est. Rating</span>
+                  <span class="est-rating-value">{{ estimatedRatings.black }}</span>
+                </div>
+                <div class="est-rating empty" v-else>
+                  <span class="est-rating-label">Est. Rating</span>
+                  <span class="est-rating-value">—</span>
+                </div>
+
+                <div
+                  v-for="key in classificationOrder"
+                  :key="'b-' + key"
+                  class="report-row"
+                  :class="{
+                    dim: gameReportStats.black.counts[key] === 0,
+                    clickable: gameReportStats.black.counts[key] > 0
+                  }"
+                  :title="gameReportStats.black.counts[key] > 0 ? 'Jump to first ' + classificationMeta[key].label + ' move' : ''"
+                  @click="jumpToClassification('black', key)"
+                >
+                  <img :src="accuracySymbol(key)" class="report-row-icon" />
+                  <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
+                    {{ classificationMeta[key].label }}
+                  </span>
+                  <span class="report-row-count">{{ gameReportStats.black.counts[key] }}</span>
+                </div>
               </div>
             </div>
 
-            <div class="report-col">
-              <div class="report-side-header">
-                <span class="side-swatch black-swatch"></span>
-                <span>Black</span>
+            <!-- ===== EVAL GRAPH (Lichess-style area chart) ===== -->
+            <div class="eval-graph-card" v-if="evalGraphGeom">
+              <div class="eval-graph-head">
+                <span class="eval-graph-title">Evaluation Graph</span>
+                <span class="eval-graph-hint">Click anywhere to jump to that move</span>
               </div>
-
-              <div class="accuracy-score" v-if="gameReportStats.black.accuracy !== null">
-                {{ gameReportStats.black.accuracy.toFixed(1) }}
-                <span class="accuracy-percent">%</span>
-              </div>
-              <div class="accuracy-score empty" v-else>—</div>
-
-              <div class="est-rating" v-if="estimatedRatings.black !== null">
-                <span class="est-rating-label">Est. Rating</span>
-                <span class="est-rating-value">{{ estimatedRatings.black }}</span>
-              </div>
-              <div class="est-rating empty" v-else>
-                <span class="est-rating-label">Est. Rating</span>
-                <span class="est-rating-value">—</span>
-              </div>
-
-              <div
-                v-for="key in classificationOrder"
-                :key="'b-' + key"
-                class="report-row"
-                :class="{ dim: gameReportStats.black.counts[key] === 0 }"
-              >
-                <img :src="accuracySymbol(key)" class="report-row-icon" />
-                <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
-                  {{ classificationMeta[key].label }}
-                </span>
-                <span class="report-row-count">{{ gameReportStats.black.counts[key] }}</span>
+              <div class="eval-graph-area" @click="evalGraphClick">
+                <svg class="eval-graph-svg" viewBox="0 0 1000 300" preserveAspectRatio="none">
+                  <path :d="evalGraphGeom.blackArea" class="eg-black" />
+                  <path :d="evalGraphGeom.whiteArea" class="eg-white" />
+                  <line x1="0" y1="150" x2="1000" y2="150" class="eg-center" />
+                </svg>
+                <div
+                  v-if="evalGraphGeom.currentIdx >= 0"
+                  class="eg-current"
+                  :style="{ left: evalGraphGeom.coords[evalGraphGeom.currentIdx].xPct + '%' }"
+                ></div>
+                <span
+                  v-for="pt in evalGraphGeom.coords.filter(c => c.accuracy)"
+                  :key="'eg-' + pt.ply"
+                  class="eg-dot"
+                  :class="[pt.accuracy, { current: pt.nodeId === currentNode.id }]"
+                  :style="{ left: pt.xPct + '%', top: pt.yPct + '%' }"
+                  :title="evalDotTitle(pt)"
+                  @click.stop="jumpToNode(pt.nodeId)"
+                ></span>
               </div>
             </div>
+
+            <!-- ===== MAXIMIZED-ONLY SECTIONS ===== -->
+            <template v-if="isReportMaximized">
+              <div class="report-max-grid">
+
+                <!-- Move classification distribution -->
+                <div class="report-card">
+                  <h4 class="report-card-title">Move Classification</h4>
+                  <div v-for="bar in reportBars" :key="bar.side" class="report-bar-block">
+                    <div class="report-bar-label">
+                      <span class="side-swatch" :class="bar.side + '-swatch'"></span>
+                      {{ bar.side === 'white' ? 'White' : 'Black' }}
+                      <span class="report-bar-total">{{ bar.total }} moves</span>
+                    </div>
+                    <div class="report-bar">
+                      <div
+                        v-for="seg in bar.segments"
+                        :key="seg.key"
+                        class="report-bar-seg"
+                        :style="{ width: seg.percent + '%', background: seg.meta.color }"
+                        :title="`${seg.meta.label}: ${seg.count}`"
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Phase accuracy -->
+                <div class="report-card" v-if="gameExtendedStats">
+                  <h4 class="report-card-title">Accuracy by Phase</h4>
+                  <div class="phase-rows">
+                    <div v-for="phase in ['opening', 'middlegame', 'endgame']" :key="phase" class="phase-row">
+                      <span class="phase-row-name">{{ phase.charAt(0).toUpperCase() + phase.slice(1) }}</span>
+                      <div class="phase-row-vals">
+                        <span class="phase-val-chip" :style="{ color: accColorForWeight(gameExtendedStats.white.phases[phase]) }">
+                          {{ fmtAcc(gameExtendedStats.white.phases[phase]) }}
+                        </span>
+                        <span class="phase-val-chip" :style="{ color: accColorForWeight(gameExtendedStats.black.phases[phase]) }">
+                          {{ fmtAcc(gameExtendedStats.black.phases[phase]) }}
+                        </span>
+                      </div>
+                      <div class="phase-row-bars">
+                        <div class="phase-mini-bar"><div :style="{ width: (gameExtendedStats.white.phases[phase] || 0) + '%', background: accColorForWeight(gameExtendedStats.white.phases[phase]) }"></div></div>
+                        <div class="phase-mini-bar"><div :style="{ width: (gameExtendedStats.black.phases[phase] || 0) + '%', background: accColorForWeight(gameExtendedStats.black.phases[phase]) }"></div></div>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="report-card-note">Top bar / value = White · Bottom = Black</p>
+                </div>
+
+                <!-- Accuracy by move number -->
+                <div class="report-card" v-if="gameExtendedStats">
+                  <h4 class="report-card-title">Accuracy by Move Number</h4>
+                  <div class="bucket-rows">
+                    <div v-for="label in moveBucketOrderLocal" :key="label" class="bucket-row">
+                      <span class="bucket-row-label">{{ label }}</span>
+                      <span class="bucket-row-val" :style="{ color: accColorForWeight(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc ?? null) }">
+                        {{ fmtAcc(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc) }}
+                      </span>
+                      <span class="bucket-row-val" :style="{ color: accColorForWeight(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc ?? null) }">
+                        {{ fmtAcc(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc) }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="bucket-legend">
+                    <span class="side-swatch white-swatch"></span> White
+                    <span class="side-swatch black-swatch"></span> Black
+                  </div>
+                </div>
+
+                <!-- Game stats -->
+                <div class="report-card" v-if="gameExtendedStats">
+                  <h4 class="report-card-title">Game Stats</h4>
+                  <div class="gstats-table">
+                    <div class="gstats-head"><span></span><span>White</span><span>Black</span></div>
+                    <div class="gstats-row"><span>Checks</span><span>{{ gameExtendedStats.white.checks }}</span><span>{{ gameExtendedStats.black.checks }}</span></div>
+                    <div class="gstats-row"><span>Captures</span><span>{{ gameExtendedStats.white.captures }}</span><span>{{ gameExtendedStats.black.captures }}</span></div>
+                    <div class="gstats-row"><span>Pawns lost (eval)</span><span>{{ gameExtendedStats.white.cpLost }}</span><span>{{ gameExtendedStats.black.cpLost }}</span></div>
+                    <div class="gstats-row"><span>Swings gained</span><span>{{ gameExtendedStats.white.swingsGained }}</span><span>{{ gameExtendedStats.black.swingsGained }}</span></div>
+                  </div>
+                </div>
+
+                <!-- Accuracy by piece -->
+                <div class="report-card" v-if="gamePieceStats.some(p => p.white.count || p.black.count)">
+                  <h4 class="report-card-title">Accuracy by Piece</h4>
+                  <div class="gstats-table">
+                    <div class="gstats-head"><span></span><span>White</span><span>Black</span></div>
+                    <div v-for="p in gamePieceStats" :key="p.key" class="gstats-row piece-row">
+                      <span class="piece-cell">
+                        <span class="piece-sym">{{ p.symbol }}</span>
+                        {{ p.label }}
+                        <span class="piece-counts">({{ p.white.count }}/{{ p.black.count }})</span>
+                      </span>
+                      <span :style="{ color: accColorForWeight(p.white.acc) }">{{ fmtAcc(p.white.acc) }}</span>
+                      <span :style="{ color: accColorForWeight(p.black.acc) }">{{ fmtAcc(p.black.acc) }}</span>
+                    </div>
+                  </div>
+                  <p class="report-card-note">Move counts per side shown as (White/Black)</p>
+                </div>
+
+                <!-- Key moments -->
+                <div class="report-card" v-if="keyMoments.length">
+                  <h4 class="report-card-title">Key Moments</h4>
+                  <div class="moments-list">
+                    <button v-for="m in keyMoments" :key="'km-' + m.nodeId" class="moment-row" @click="jumpToMoment(m)">
+                      <span class="moment-side" :class="m.side"></span>
+                      <span class="moment-san">{{ Math.ceil(m.ply / 2) }}{{ m.ply % 2 === 1 ? '.' : '...' }} {{ m.san }}</span>
+                      <img v-if="accuracySymbol(m.accuracy)" :src="accuracySymbol(m.accuracy)" class="moment-icon" />
+                      <span class="moment-swing">{{ (m.swing / 100).toFixed(1) }} cp swing</span>
+                    </button>
+                  </div>
+                  <p class="report-card-note">Click a moment to jump to it on the board</p>
+                </div>
+
+              </div>
+            </template>
           </div>
-        </div>
+        </Teleport>
 
         <div class="explorer" v-else-if="activeTab === 'explorer'">
           <div class="explorer-db-toggle">
@@ -1900,6 +2504,51 @@
       </div>
     </div>
   </div>
+
+  <!-- Note editor popover -->
+  <Teleport to="body">
+    <div v-if="editingNoteNodeId !== null" class="note-overlay" @click.self="cancelNote">
+      <div class="note-editor">
+        <h3 class="note-editor-title">
+          📝 Move Note
+          <span class="note-editor-move">{{ nodeMap[editingNoteNodeId]?.san }}</span>
+        </h3>
+        <textarea
+          v-model="noteDraft"
+          class="note-textarea"
+          rows="3"
+          placeholder="e.g. Missed the tactic here, should have played Bxh7+ first…"
+          @keydown.ctrl.enter="saveNote"
+          @keydown.meta.enter="saveNote"
+          autofocus
+        ></textarea>
+        <div class="note-actions">
+          <button class="note-btn cancel" @click="cancelNote">Cancel</button>
+          <button class="note-btn save" @click="saveNote">Save</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- Shortcuts help -->
+  <Teleport to="body">
+    <Transition name="toast-fade">
+      <div v-if="showShortcuts" class="shortcuts-overlay" @click.self="showShortcuts = false">
+        <div class="shortcuts-panel">
+          <div class="shortcuts-header">
+            <h3>⌨️ Keyboard Shortcuts</h3>
+            <button class="shortcuts-close" @click="showShortcuts = false">✕</button>
+          </div>
+          <div class="shortcuts-list">
+            <div v-for="s in shortcuts" :key="s.keys" class="shortcut-row">
+              <kbd>{{ s.keys }}</kbd>
+              <span>{{ s.desc }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 
   <Teleport to="body">
     <div
@@ -2117,6 +2766,39 @@
   border-radius: 6px;
   padding: 0.05rem 0.4rem;
   flex-shrink: 0;
+}
+
+.player-rating + .captured-pieces {
+  margin-left: 0.5rem;
+}
+
+/* ===== CAPTURED PIECES ================================================= */
+.captured-pieces {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+  padding-left: 0.25rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.captured-piece {
+  font-size: 0.85rem;
+  line-height: 1;
+  opacity: 0.85;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
+}
+
+.material-badge {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #a8d97a;
+  background: rgba(106, 209, 63, 0.15);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  margin-left: 0.25rem;
 }
 
 .analysis-container {
@@ -2635,6 +3317,12 @@
   margin-left: 2px;
 }
 
+.note-indicator {
+  font-size: 0.7rem;
+  opacity: 0.7;
+  cursor: help;
+}
+
 .tabs-toggle {
   display: flex;
   gap: 4px;
@@ -2696,6 +3384,11 @@
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
+}
+
+.boardtools-left {
+  grid-column: 1;
+  justify-self: start;
 }
 
 .share-menu-wrap {
@@ -2966,10 +3659,13 @@
   background: rgba(255, 60, 60, 0.2);
 }
 
+/* ===== REPORT =========================================================== */
 .report {
   padding: 1rem;
-  max-height: 400px;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
 }
 
 .report-columns {
@@ -3084,6 +3780,14 @@
   opacity: 0.35;
 }
 
+.report-row.clickable {
+  cursor: pointer;
+}
+
+.report-row.clickable:hover {
+  background: rgba(103, 122, 228, 0.18);
+}
+
 .report-row-icon {
   width: 16px;
   height: 16px;
@@ -3112,6 +3816,607 @@
   flex-shrink: 0;
 }
 
+/* ===== REPORT HEADER / MAXIMIZE ========================================= */
+.report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.report-title {
+  font-family: serif;
+  color: #f5f5dc;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.report-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(244, 240, 227, 0.8);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.report-expand-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f4f0e3;
+}
+
+.report.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  max-height: none;
+  height: 100dvh;
+  overflow-y: auto;
+  border-radius: 0;
+  border: none;
+  margin: 0;
+  padding: 1.25rem clamp(1rem, 4vw, 3rem) 2.5rem;
+  background: linear-gradient(160deg, var(--panel-1, #262421), var(--panel-2, #1e1c18) 60%, #171512);
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: reportZoom 0.25s ease;
+}
+
+@keyframes reportZoom {
+  from { opacity: 0; transform: scale(0.985); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.report.maximized .report-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: linear-gradient(180deg, var(--panel-1, #262421) 75%, transparent);
+  padding: 0.35rem 0 0.5rem;
+}
+
+.report.maximized .report-title { font-size: 1.15rem; }
+.report.maximized .report-columns { max-width: 760px; width: 100%; margin: 0 auto; }
+.report.maximized .eval-graph-card { max-width: 960px; width: 100%; margin: 0 auto; }
+.report.maximized .eval-graph-area { height: 220px; }
+
+.report-max-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.report-card {
+  background: linear-gradient(135deg, var(--list-1), var(--list-2));
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.report-card-wide { grid-column: 1 / -1; }
+
+.report-card-title {
+  font-family: serif;
+  color: #f5f5dc;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.report-card-note {
+  margin: 0;
+  font-size: 0.7rem;
+  color: rgba(244, 240, 227, 0.45);
+  font-style: italic;
+}
+
+/* ===== EVAL GRAPH (area style) ========================================== */
+.eval-graph-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.eval-graph-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.eval-graph-title {
+  font-family: serif;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.8rem;
+  color: #f5f5dc;
+}
+
+.eval-graph-hint {
+  font-size: 0.68rem;
+  color: rgba(244, 240, 227, 0.45);
+}
+
+.eval-graph-area {
+  position: relative;
+  height: 110px;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #f0ede6;
+}
+
+.eval-graph-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.eg-black { fill: #3a3833; }
+.eg-white { fill: #f0ede6; }
+
+.eg-center {
+  stroke: rgba(120, 118, 110, 0.55);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.eg-current {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.55);
+  transform: translateX(-1px);
+  pointer-events: none;
+  mix-blend-mode: difference;
+}
+
+.eg-dot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.eg-dot.current {
+  box-shadow: 0 0 0 2px #fff, 0 0 6px rgba(255, 255, 255, 0.8);
+}
+
+.eg-dot.brilliant  { background: #03aea7; }
+.eg-dot.great      { background: #4c8cb5; }
+.eg-dot.best       { background: #6ad13f; }
+.eg-dot.excellent  { background: #90bc36; }
+.eg-dot.good       { background: #8eae83; }
+.eg-dot.book       { background: #ad8760; }
+.eg-dot.inaccuracy { background: #f2bc43; }
+.eg-dot.mistake    { background: #f38800; }
+.eg-dot.blunder    { background: #FF0000; }
+
+/* ===== MAXIMIZED CARDS =================================================== */
+.report-bar-block { display: flex; flex-direction: column; gap: 0.3rem; }
+
+.report-bar-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(244, 240, 227, 0.85);
+  text-transform: capitalize;
+}
+
+.report-bar-total {
+  margin-left: auto;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  color: rgba(244, 240, 227, 0.5);
+}
+
+.report-bar {
+  display: flex;
+  width: 100%;
+  height: 0.9rem;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.report-bar-seg { height: 100%; }
+
+.phase-rows { display: flex; flex-direction: column; gap: 0.7rem; }
+
+.phase-row {
+  display: grid;
+  grid-template-columns: 5.2rem 1fr;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.phase-row-name {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(244, 240, 227, 0.75);
+}
+
+.phase-row-vals { display: flex; gap: 0.5rem; justify-content: flex-end; }
+
+.phase-val-chip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  min-width: 3.4rem;
+  text-align: right;
+}
+
+.phase-row-bars { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 3px; }
+
+.phase-mini-bar {
+  height: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.phase-mini-bar div { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+
+.bucket-rows { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.bucket-row {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr 1fr;
+  gap: 0.5rem;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+}
+
+.bucket-row-label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: rgba(244, 240, 227, 0.6);
+  font-weight: 700;
+}
+
+.bucket-row-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.bucket-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: rgba(244, 240, 227, 0.6);
+}
+
+.bucket-legend .side-swatch { margin-left: 0.4rem; }
+
+.gstats-table { display: flex; flex-direction: column; gap: 0.3rem; }
+
+.gstats-head,
+.gstats-row {
+  display: grid;
+  grid-template-columns: 1fr 3.5rem 3.5rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.gstats-head {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(244, 240, 227, 0.55);
+  font-weight: 700;
+}
+
+.gstats-head span:not(:first-child),
+.gstats-row span:not(:first-child) {
+  text-align: right;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.gstats-row {
+  font-size: 0.82rem;
+  color: rgba(244, 240, 227, 0.85);
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 0.32rem 0.5rem;
+}
+
+.gstats-row span:first-child { color: rgba(244, 240, 227, 0.7); }
+
+.gstats-row.piece-row {
+  grid-template-columns: 1fr 4.6rem 4.6rem;
+}
+
+.piece-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.piece-sym {
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.piece-counts {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  color: rgba(244, 240, 227, 0.45);
+}
+
+.moments-list { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.moment-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  background: rgba(0, 0, 0, 0.12);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: #f4f0e3;
+  width: 100%;
+}
+
+.moment-row:hover {
+  background: rgba(103, 122, 228, 0.18);
+  border-color: rgba(220, 228, 255, 0.35);
+}
+
+.moment-side {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.moment-side.white { background: #f4f0e3; }
+.moment-side.black { background: #1a1a1a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35); }
+
+.moment-san {
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.moment-icon { width: 18px; height: 18px; flex-shrink: 0; }
+
+.moment-swing {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  color: rgba(244, 240, 227, 0.55);
+  flex-shrink: 0;
+}
+
+/* ===== NOTE EDITOR ====================================================== */
+.note-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(3px);
+}
+
+.note-editor {
+  background: linear-gradient(145deg, var(--panel-1, #262421), var(--panel-2, #1e1c18));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: 1.2rem 1.4rem;
+  width: min(90vw, 24rem);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+}
+
+.note-editor-title {
+  font-family: serif;
+  color: #f5f5dc;
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.note-editor-move {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.85rem;
+  color: var(--text-highlight, #d9b382);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+}
+
+.note-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  color: #f4f0e3;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.note-textarea:focus {
+  border-color: rgba(168, 217, 122, 0.5);
+}
+
+.note-textarea::placeholder {
+  color: rgba(244, 240, 227, 0.35);
+}
+
+.note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.note-btn {
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
+  border: none;
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.note-btn.cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(244, 240, 227, 0.7);
+}
+
+.note-btn.cancel:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.note-btn.save {
+  background: linear-gradient(145deg, rgba(168, 217, 122, 0.3), rgba(106, 209, 63, 0.2));
+  color: #a8d97a;
+  border: 1px solid rgba(168, 217, 122, 0.3);
+}
+
+.note-btn.save:hover {
+  background: linear-gradient(145deg, rgba(168, 217, 122, 0.4), rgba(106, 209, 63, 0.3));
+}
+
+/* ===== SHORTCUTS PANEL =================================================== */
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+}
+
+.shortcuts-panel {
+  background: linear-gradient(145deg, var(--panel-1, #262421), var(--panel-2, #1e1c18));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 1.3rem 1.5rem;
+  width: min(90vw, 22rem);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+}
+
+.shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.shortcuts-header h3 {
+  font-family: serif;
+  color: #f5f5dc;
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.shortcuts-close {
+  background: none;
+  border: none;
+  color: rgba(244, 240, 227, 0.6);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.2rem;
+  line-height: 1;
+}
+
+.shortcuts-close:hover {
+  color: #f4f0e3;
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.shortcut-row kbd {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-highlight, #d9b382);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0.25rem 0.55rem;
+  min-width: 4.5rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.shortcut-row span {
+  color: rgba(244, 240, 227, 0.8);
+  font-size: 0.85rem;
+}
+
+/* ===== EXPLORER ========================================================== */
 .explorer {
   padding: 0.4rem 0.5rem 0.6rem;
   box-sizing: border-box;
@@ -3316,6 +4621,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
+/* ===== MOBILE ============================================================ */
 @media (max-width: 767px) {
   .acc-badge {
     width: 24px;
@@ -3400,6 +4706,18 @@
     padding: 0.22rem 0.55rem;
     margin: 0;
     font-size: 0.78rem;
+  }
+
+  .captured-pieces {
+    padding-left: 0.3rem;
+  }
+
+  .captured-piece {
+    font-size: 0.72rem;
+  }
+
+  .material-badge {
+    font-size: 0.55rem;
   }
 
   .analyze {
@@ -3538,6 +4856,18 @@
     padding: 0.6rem;
   }
 
+  .report.maximized {
+    padding: 1rem 0.75rem 2rem;
+  }
+
+  .report.maximized .eval-graph-area {
+    height: 160px;
+  }
+
+  .eval-graph-area {
+    height: 90px;
+  }
+
   .report-col {
     padding: 0.55rem 0.4rem;
   }
@@ -3621,6 +4951,12 @@
   .boardtools-nav {
     gap: 1rem;
     justify-content: center;
+  }
+
+  .shortcuts-panel,
+  .note-editor {
+    width: min(92vw, 20rem);
+    padding: 1rem 1.1rem;
   }
 }
 </style>
