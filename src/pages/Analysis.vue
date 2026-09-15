@@ -1003,6 +1003,17 @@
     return map[acc] ? `/moveClassifications/${map[acc]}.png` : undefined
   }
 
+  function accuracyToClass(acc) {
+    if (acc === null || acc === undefined) return null
+    if (acc >= 95) return 'great'
+    if (acc >= 85) return 'best'
+    if (acc >= 75) return 'excellent'
+    if (acc >= 65) return 'good'
+    if (acc >= 45) return 'inaccuracy'
+    if (acc >= 20) return 'mistake'
+    return 'blunder'
+  }
+
   function moveDescription() {
     isAccuracy.value = ''
     if (!currentNode.value.san) return
@@ -1694,12 +1705,13 @@
 
   function accColorForWeight(w) {
     if (w === null || w === undefined) return 'rgba(244,240,227,0.4)'
-    if (w >= 95) return '#6ad13f'
-    if (w >= 85) return '#90bc36'
-    if (w >= 70) return '#8eae83'
-    if (w >= 45) return '#f2bc43'
-    if (w >= 20) return '#f38800'
-    return '#FF0000'
+    if (w >= 95) return accuracyColors.great
+    if (w >= 85) return accuracyColors.best
+    if (w >= 75) return accuracyColors.excellent
+    if (w >= 65) return accuracyColors.good
+    if (w >= 45) return accuracyColors.inaccuracy
+    if (w >= 20) return accuracyColors.mistake
+    return accuracyColors.blunder
   }
 
   function fmtAcc(v) {
@@ -2357,19 +2369,18 @@
               <div class="report-col">
                 <div class="report-side-header">
                   <span class="side-swatch white-swatch"></span>
-                  <span>White</span>
+                  <span>{{ whiteName }}</span>
                 </div>
                 <div class="accuracy-score" v-if="gameReportStats.white.accuracy !== null">
+                  <img v-if="accuracySymbol(accuracyToClass(gameReportStats.white.accuracy))" :src="accuracySymbol(accuracyToClass(gameReportStats.white.accuracy))" class="acc-logo-main" />
                   {{ gameReportStats.white.accuracy.toFixed(1) }}
                   <span class="accuracy-percent">%</span>
                 </div>
                 <div class="accuracy-score empty" v-else>—</div>
                 <div class="est-rating" v-if="estimatedRatings.white !== null">
-                  <span class="est-rating-label">Est. Rating</span>
                   <span class="est-rating-value">{{ estimatedRatings.white }}</span>
                 </div>
                 <div class="est-rating empty" v-else>
-                  <span class="est-rating-label">Est. Rating</span>
                   <span class="est-rating-value">—</span>
                 </div>
                 <div
@@ -2392,19 +2403,18 @@
               <div class="report-col">
                 <div class="report-side-header">
                   <span class="side-swatch black-swatch"></span>
-                  <span>Black</span>
+                  <span>{{ blackName }}</span>
                 </div>
                 <div class="accuracy-score" v-if="gameReportStats.black.accuracy !== null">
+                  <img v-if="accuracySymbol(accuracyToClass(gameReportStats.black.accuracy))" :src="accuracySymbol(accuracyToClass(gameReportStats.black.accuracy))" class="acc-logo-main" />
                   {{ gameReportStats.black.accuracy.toFixed(1) }}
                   <span class="accuracy-percent">%</span>
                 </div>
                 <div class="accuracy-score empty" v-else>—</div>
                 <div class="est-rating" v-if="estimatedRatings.black !== null">
-                  <span class="est-rating-label">Est. Rating</span>
                   <span class="est-rating-value">{{ estimatedRatings.black }}</span>
                 </div>
                 <div class="est-rating empty" v-else>
-                  <span class="est-rating-label">Est. Rating</span>
                   <span class="est-rating-value">—</span>
                 </div>
                 <div
@@ -2488,7 +2498,7 @@
                   <div v-for="bar in reportBars" :key="bar.side" class="report-bar-block">
                     <div class="report-bar-label">
                       <span class="side-swatch" :class="bar.side + '-swatch'"></span>
-                      {{ bar.side === 'white' ? 'White' : 'Black' }}
+                      {{ bar.side === 'white' ? whiteName : blackName }}
                       <span class="report-bar-total">{{ bar.total }} moves</span>
                     </div>
                     <div class="report-bar">
@@ -2510,11 +2520,11 @@
                       <span class="phase-row-name">{{ phase.charAt(0).toUpperCase() + phase.slice(1) }}</span>
                       <div class="phase-row-vals">
                         <span class="phase-val-chip" :style="{ color: accColorForWeight(gameExtendedStats.white.phases[phase]) }">
-                          <span class="color-indicator white"></span>
+                          <img v-if="accuracySymbol(accuracyToClass(gameExtendedStats.white.phases[phase]))" :src="accuracySymbol(accuracyToClass(gameExtendedStats.white.phases[phase]))" class="acc-logo-small" />
                           {{ fmtAcc(gameExtendedStats.white.phases[phase]) }}
                         </span>
                         <span class="phase-val-chip" :style="{ color: accColorForWeight(gameExtendedStats.black.phases[phase]) }">
-                          <span class="color-indicator black"></span>
+                          <img v-if="accuracySymbol(accuracyToClass(gameExtendedStats.black.phases[phase]))" :src="accuracySymbol(accuracyToClass(gameExtendedStats.black.phases[phase]))" class="acc-logo-small" />
                           {{ fmtAcc(gameExtendedStats.black.phases[phase]) }}
                         </span>
                       </div>
@@ -2528,7 +2538,7 @@
                       </div>
                     </div>
                   </div>
-                  <p class="report-card-note">Top bar / value = White · Bottom = Black</p>
+                  <p class="report-card-note">Top bar / value = {{ whiteName }} · Bottom = {{ blackName }}</p>
                 </div>
 
                 <div class="report-card" v-if="gameExtendedStats">
@@ -2536,23 +2546,19 @@
                   <div class="bucket-rows">
                     <div v-for="label in moveBucketOrderLocal" :key="label" class="bucket-row">
                       <span class="bucket-row-label">{{ label }}</span>
-                      <span
-                        class="bucket-row-val"
-                        :style="{ color: accColorForWeight(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc ?? null) }"
-                      >
+                      <span class="bucket-row-val" :style="{ color: accColorForWeight(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc ?? null) }">
+                        <img v-if="accuracySymbol(accuracyToClass(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc))" :src="accuracySymbol(accuracyToClass(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc))" class="acc-logo-small" />
                         {{ fmtAcc(gameExtendedStats.white.buckets.find(b => b.label === label)?.acc) }}
                       </span>
-                      <span
-                        class="bucket-row-val"
-                        :style="{ color: accColorForWeight(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc ?? null) }"
-                      >
+                      <span class="bucket-row-val" :style="{ color: accColorForWeight(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc ?? null) }">
+                        <img v-if="accuracySymbol(accuracyToClass(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc))" :src="accuracySymbol(accuracyToClass(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc))" class="acc-logo-small" />
                         {{ fmtAcc(gameExtendedStats.black.buckets.find(b => b.label === label)?.acc) }}
                       </span>
                     </div>
                   </div>
                   <div class="bucket-legend">
-                    <span class="side-swatch white-swatch"></span> White
-                    <span class="side-swatch black-swatch"></span> Black
+                    <span class="side-swatch white-swatch"></span> {{ whiteName }}
+                    <span class="side-swatch black-swatch"></span> {{ blackName }}
                   </div>
                 </div>
 
@@ -2560,7 +2566,7 @@
                   <h4 class="report-card-title">Game Stats</h4>
                   <div class="gstats-table">
                     <div class="gstats-head">
-                      <span></span><span>White</span><span>Black</span>
+                      <span></span><span>{{ whiteName }}</span><span>{{ blackName }}</span>
                     </div>
                     <div class="gstats-row">
                       <span>Checks</span><span>{{ gameExtendedStats.white.checks }}</span><span>{{ gameExtendedStats.black.checks }}</span>
@@ -2581,7 +2587,7 @@
                   <h4 class="report-card-title">Accuracy by Piece</h4>
                   <div class="gstats-table">
                     <div class="gstats-head">
-                      <span></span><span>White</span><span>Black</span>
+                      <span></span><span>{{ whiteName }}</span><span>{{ blackName }}</span>
                     </div>
                     <div v-for="p in gamePieceStats" :key="p.key" class="gstats-row piece-row">
                       <span class="piece-cell">
@@ -2589,11 +2595,17 @@
                         {{ p.label }}
                         <span class="piece-counts">({{ p.white.count }}/{{ p.black.count }})</span>
                       </span>
-                      <span :style="{ color: accColorForWeight(p.white.acc) }">{{ fmtAcc(p.white.acc) }}</span>
-                      <span :style="{ color: accColorForWeight(p.black.acc) }">{{ fmtAcc(p.black.acc) }}</span>
+                      <span :style="{ color: accColorForWeight(p.white.acc) }">
+                        <img v-if="accuracySymbol(accuracyToClass(p.white.acc))" :src="accuracySymbol(accuracyToClass(p.white.acc))" class="acc-logo-small" />
+                        {{ fmtAcc(p.white.acc) }}
+                      </span>
+                      <span :style="{ color: accColorForWeight(p.black.acc) }">
+                        <img v-if="accuracySymbol(accuracyToClass(p.black.acc))" :src="accuracySymbol(accuracyToClass(p.black.acc))" class="acc-logo-small" />
+                        {{ fmtAcc(p.black.acc) }}
+                      </span>
                     </div>
                   </div>
-                  <p class="report-card-note">Move counts per side shown as (White/Black)</p>
+                  <p class="report-card-note">Move counts per side shown as ({{ whiteName }}/{{ blackName }})</p>
                 </div>
 
                 <div class="report-card" v-if="keyMoments.length">
@@ -3804,10 +3816,17 @@
     color: #a8d97a;
     text-align: center;
     margin: 0.1rem 0 0.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
   }
 
   .accuracy-score.empty { color: rgba(245, 245, 220, 0.4); font-size: 1.2rem; }
   .accuracy-percent { font-size: 0.6em; opacity: 0.75; }
+
+  .acc-logo-main { width: 1.4rem; height: 1.4rem; flex-shrink: 0; }
+  .acc-logo-small { width: 0.85rem; height: 0.85rem; flex-shrink: 0; }
 
   .est-rating {
     display: flex;
@@ -4218,6 +4237,7 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: 0.3rem;
   }
 
   .color-indicator {
@@ -4251,7 +4271,16 @@
   }
 
   .bucket-row-label { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: rgba(244, 240, 227, 0.6); font-weight: 700; }
-  .bucket-row-val { font-family: "JetBrains Mono", monospace; font-size: 0.8rem; font-weight: 700; text-align: center; }
+  .bucket-row-val { 
+    font-family: "JetBrains Mono", monospace; 
+    font-size: 0.8rem; 
+    font-weight: 700; 
+    text-align: center; 
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+  }
   .bucket-legend { display: flex; align-items: center; gap: 0.35rem; font-size: 0.7rem; color: rgba(244, 240, 227, 0.6); }
   .bucket-legend .side-swatch { margin-left: 0.4rem; }
 
@@ -4275,6 +4304,10 @@
   .gstats-head span:not(:first-child), .gstats-row span:not(:first-child) {
     text-align: right;
     font-family: "JetBrains Mono", monospace;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.3rem;
   }
 
   .gstats-row {
