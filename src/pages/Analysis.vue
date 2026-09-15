@@ -5662,6 +5662,56 @@ button,
     width: min(92vw, 20rem);
     padding: 1rem 1.1rem;
   }
+
+    /* ===== LICHESS-STYLE APP LAYOUT ========================================= */
+  .grid-layout {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;          /* the page itself never scrolls anymore */
+  }
+
+  .title-slot { display: none; }   /* optional: reclaims ~40px (Lichess has no logo header) */
+
+  /* Engine lines sit ABOVE the board, compact, like the screenshot */
+  .analyze {
+    order: 0;
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: hidden;
+  }
+  .analysis-title-row { display: none; }        /* drop "Analysis" heading, keep the controls row */
+  .analyzis-header { padding: 0.25rem 0.35rem 0; gap: 0.25rem; }
+  .line, .secondline { margin: 2px 0; padding: 0.28rem 0.45rem; }
+
+  /* Board group stays FULL WIDTH right below the lines */
+  .player-bar { order: 1; }
+  .board-row  { order: 1; }
+
+  /* Moves / Report / Explorer fill ALL remaining space and scroll inside */
+  .moves {
+    order: 2;
+    flex: 1 1 auto;
+    min-height: 0;             /* critical: allows shrink + internal scrolling */
+    max-height: none;
+    overscroll-behavior: contain;
+  }
+  .explorer { max-height: none; min-height: 0; }
+
+  /* Toolbar sits pinned at the bottom (sticky no longer needed) */
+  .boardtools { order: 3; position: static; }
+
+  /* Short phones: show fewer engine lines so nothing gets squeezed */
+  @media (max-height: 740px) {
+    .move-data .secondline + .secondline { display: none; }  /* hide 3rd line */
+  }
+  @media (max-height: 640px) {
+    .move-data .secondline { display: none; }                /* main line only */
+  }
+
+  /* Escape hatch: landscape / very short screens fall back to scrolling */
+  @media (max-height: 520px) {
+    .grid-layout { overflow-y: auto; }
+  }
 }
 </style>
 
