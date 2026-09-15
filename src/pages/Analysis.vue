@@ -101,9 +101,6 @@ const activeTab = ref('moves')
 const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
 const shareMenuOpen = ref(false)
 
-// ✦ NEW: Analysis completion modal
-const analysisComplete = ref(false)
-
 const audioCache = {
   move: new Audio(moveSfx),
   capture: new Audio(captureSfx),
@@ -208,59 +205,6 @@ watch([lastMoveFromSquare, lastMoveSquare], ([from, to]) => {
   if (!boardAPI.value) return
   boardAPI.value.setConfig({ lastMove: from && to ? [from, to] : undefined })
 })
-
-// ✦ NEW: determine whose move was just played + chat-style description
-const lastMovePly = computed(() => {
-  if (!currentNode.value.san) return 0
-  let n = currentNode.value
-  let ply = 0
-  while (n.parent !== null) { ply++; n = n.parent }
-  return ply
-})
-
-const lastMoveSide = computed(() => {
-  const ply = lastMovePly.value
-  if (ply === 0) return null
-  return ply % 2 === 1 ? 'white' : 'black'
-})
-
-const lastMovePlayerName = computed(() => {
-  const side = lastMoveSide.value
-  if (!side) return ''
-  return side === 'white' ? whiteName.value : blackName.value
-})
-
-const lastMovePlayerRating = computed(() => {
-  const side = lastMoveSide.value
-  if (!side) return null
-  return side === 'white' ? whiteRating.value : blackRating.value
-})
-
-// Chat-style short description (e.g. "Bb7 is theoretical" or "Nf3 — Best move")
-const chatBubbleText = computed(() => {
-  if (!currentNode.value.san || !moveData.value) return ''
-  const san = currentNode.value.san
-  const acc = moveData.value.move_accuracy
-  const map = {
-    brilliant: `${prettyMove(san)}! Brilliant`,
-    great: `${prettyMove(san)} — Great move`,
-    best: `${prettyMove(san)} — Best move`,
-    excellent: `${prettyMove(san)} — Excellent`,
-    good: `${prettyMove(san)} — Good`,
-    book: `${prettyMove(san)} — Book move`,
-    inaccuracy: `${prettyMove(san)}? Inaccuracy`,
-    mistake: `${prettyMove(san)}?? Mistake`,
-    blunder: `${prettyMove(san)}??? Blunder`
-  }
-  return map[acc] || prettyMove(san)
-})
-
-const chatBubbleColor = computed(() => {
-  if (!moveData.value?.move_accuracy) return '#ad8760'
-  return accuracyColors[moveData.value.move_accuracy] || '#ad8760'
-})
-
-const chatBubbleEval = computed(() => formatEval(moveData.value?.eval))
 
 function isExplorerOutOfBook(node, db) {
   let n = node
@@ -814,19 +758,10 @@ watch(isReportMaximized, (max) => {
   document.body.style.overflow = max ? 'hidden' : ''
 })
 
-// ✦ NEW: Start full review from completion modal
-function startFullReview() {
-  analysisComplete.value = false
-  isReportMaximized.value = true
-  activeTab.value = 'report'
-  document.body.style.overflow = 'hidden'
-}
-
-// ✦ NEW: Dismiss completion modal & continue to moves tab
-function dismissCompletion() {
-  analysisComplete.value = false
+// ✦ NEW: Start Review — exits the maximized report and goes to moves
+function startReview() {
+  isReportMaximized.value = false
   activeTab.value = 'moves'
-  document.body.style.overflow = ''
 }
 
 function handleBothMoves(move) {
@@ -1214,7 +1149,6 @@ const handleKeyDown = (event) => {
     closeContextMenu()
     showShortcuts.value = false
     editingNoteNodeId.value = null
-    if (analysisComplete.value) { analysisComplete.value = false; document.body.style.overflow = '' }
     if (isReportMaximized.value) isReportMaximized.value = false
     return
   }
@@ -1310,14 +1244,13 @@ async function loadImportedGame(uciList) {
       goToStart()
       treeVersion.value++
       await saveGameInsights()
-      // ✦ NEW: trigger completion modal instead of just switching tab
-      analysisComplete.value = true
+      // ✦ NEW: open the maximized report with blurred background
+      isReportMaximized.value = true
       activeTab.value = 'report'
     }
   } finally {
     isImporting.value = false
     isEngineEnabled.value = false
-    document.body.style.overflow = ''
     getAccuracy()
   }
 }
@@ -1937,24 +1870,6 @@ const gamePieceStats = computed(() => {
     black: { count: black[p.key].count, acc: avg(black[p.key]) }
   }))
 })
-
-// ✦ NEW: Summary preview for completion modal
-const completionSummary = computed(() => {
-  if (!gameReportStats.value) return null
-  const w = gameReportStats.value.white
-  const b = gameReportStats.value.black
-  const totalMoves = (w.moveCount ?? 0) + (b.moveCount ?? 0)
-  return {
-    whiteAcc: w.accuracy,
-    blackAcc: b.accuracy,
-    whiteRating: estimatedRatings.value.white,
-    blackRating: estimatedRatings.value.black,
-    totalMoves: Math.ceil(totalMoves / 2),
-    blunders: (w.counts.blunder ?? 0) + (b.counts.blunder ?? 0),
-    mistakes: (w.counts.mistake ?? 0) + (b.counts.mistake ?? 0),
-    brilliant: (w.counts.brilliant ?? 0) + (b.counts.brilliant ?? 0)
-  }
-})
 </script>
 
 <template>
@@ -2001,70 +1916,6 @@ const completionSummary = computed(() => {
     </div>
   </Transition>
 
-  <!-- ✦ NEW: Analysis completion modal with blurred background -->
-  <Teleport to="body">
-    <Transition name="completion-fade">
-      <div v-if="analysisComplete" class="completion-overlay" @click.self="dismissCompletion">
-        <div class="completion-card">
-          <div class="completion-glow"></div>
-          <div class="completion-check">
-            <svg viewBox="0 0 52 52" width="56" height="56">
-              <circle cx="26" cy="26" r="25" fill="none" stroke="#6ad13f" stroke-width="2.5" opacity="0.4"/>
-              <path fill="none" stroke="#6ad13f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"
-                d="M14 27 L22 35 L38 17" class="check-path"/>
-            </svg>
-          </div>
-          <h2 class="completion-title">Analysis Complete</h2>
-          <p class="completion-subtitle" v-if="completionSummary">
-            {{ whiteName }} vs {{ blackName }} · {{ completionSummary.totalMoves }} moves
-          </p>
-
-          <div class="completion-stats" v-if="completionSummary">
-            <div class="completion-stat">
-              <div class="cs-name">{{ whiteName }}</div>
-              <div class="cs-acc" :style="{ color: accColorForWeight(completionSummary.whiteAcc) }">
-                {{ completionSummary.whiteAcc !== null ? completionSummary.whiteAcc.toFixed(1) + '%' : '—' }}
-              </div>
-              <div class="cs-rating" v-if="completionSummary.whiteRating">~{{ completionSummary.whiteRating }}</div>
-            </div>
-            <div class="completion-divider">vs</div>
-            <div class="completion-stat">
-              <div class="cs-name">{{ blackName }}</div>
-              <div class="cs-acc" :style="{ color: accColorForWeight(completionSummary.blackAcc) }">
-                {{ completionSummary.blackAcc !== null ? completionSummary.blackAcc.toFixed(1) + '%' : '—' }}
-              </div>
-              <div class="cs-rating" v-if="completionSummary.blackRating">~{{ completionSummary.blackRating }}</div>
-            </div>
-          </div>
-
-          <div class="completion-highlights" v-if="completionSummary">
-            <span class="ch-chip brilliant" v-if="completionSummary.brilliant">
-              ✨ {{ completionSummary.brilliant }} Brilliant
-            </span>
-            <span class="ch-chip mistake" v-if="completionSummary.mistakes">
-              ⚠️ {{ completionSummary.mistakes }} Mistakes
-            </span>
-            <span class="ch-chip blunder" v-if="completionSummary.blunders">
-              💥 {{ completionSummary.blunders }} Blunders
-            </span>
-          </div>
-
-          <button class="completion-cta" @click="startFullReview">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-              stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M5 12h14M13 6l6 6-6 6"/>
-            </svg>
-            Start Review
-          </button>
-          <button class="completion-skip" @click="dismissCompletion">
-            Continue browsing moves
-          </button>
-          <p class="completion-hint">Tip: press Esc to dismiss</p>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
-
   <div class="grid-layout">
     <Title class="title-slot" />
 
@@ -2074,7 +1925,6 @@ const completionSummary = computed(() => {
         ref="boardRef"
         :style="{ '--last-move-highlight': lastMoveHighlightColor}"
         @click="handleBoardClick"
-        @touchend="handleBoardClick"
       >
         <!-- TOP player bar -->
         <div class="player-bar" v-if="hasPlayerInfo">
@@ -2118,25 +1968,6 @@ const completionSummary = computed(() => {
               class="board-acc-icon"
               :style="squareStyle(lastMoveSquare)"
             />
-            <!-- ✦ NEW: Chat-style move bubble overlay -->
-            <Transition name="chat-pop">
-              <div
-                v-if="chatBubbleText && hasPlayerInfo"
-                class="chat-bubble"
-                :style="{ '--bubble-color': chatBubbleColor }"
-                :class="lastMoveSide"
-              >
-                <div class="cb-head">
-                  <span class="cb-dot"></span>
-                  <span class="cb-name">{{ lastMovePlayerName }}</span>
-                  <span v-if="lastMovePlayerRating" class="cb-rating">{{ lastMovePlayerRating }}</span>
-                </div>
-                <div class="cb-body">
-                  <span class="cb-text">{{ chatBubbleText }}</span>
-                  <span class="cb-eval" v-if="chatBubbleEval && chatBubbleEval !== ' '">{{ chatBubbleEval }}</span>
-                </div>
-              </div>
-            </Transition>
           </div>
           <div
             class="evalbar"
@@ -2456,6 +2287,7 @@ const completionSummary = computed(() => {
           </template>
         </div>
 
+        <!-- ============ REPORT (teleported to body when maximized) ============ -->
         <Teleport
           to="body"
           :disabled="!isReportMaximized"
@@ -2464,38 +2296,61 @@ const completionSummary = computed(() => {
           <div class="report" :class="{ maximized: isReportMaximized }">
             <div class="report-header">
               <h3 class="report-title">Game Report</h3>
-              <button
-                class="report-expand-btn"
-                @click="toggleReportMaximize"
-                :title="isReportMaximized ? 'Minimize report (Esc)' : 'Maximize report'"
-              >
-                <svg
-                  v-if="!isReportMaximized"
-                  viewBox="0 0 24 24"
-                  width="14"
-                  height="14"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
+              <div class="report-header-actions">
+                <!-- ✦ NEW: Start Review button in the maximized report -->
+                <button
+                  v-if="isReportMaximized"
+                  class="start-review-btn"
+                  @click="startReview"
+                  title="Close report and browse moves"
                 >
-                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-                </svg>
-                <svg
-                  v-else
-                  viewBox="0 0 24 24"
-                  width="14"
-                  height="14"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M5 12h14M13 6l6 6-6 6" />
+                  </svg>
+                  Start Review
+                </button>
+                <button
+                  class="report-expand-btn"
+                  @click="toggleReportMaximize"
+                  :title="isReportMaximized ? 'Minimize report (Esc)' : 'Maximize report'"
                 >
-                  <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
-                </svg>
-              </button>
+                  <svg
+                    v-if="!isReportMaximized"
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                  </svg>
+                  <svg
+                    v-else
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <div class="report-columns">
@@ -2625,6 +2480,7 @@ const completionSummary = computed(() => {
               </div>
             </div>
 
+            <!-- ===== MAXIMIZED-ONLY SECTIONS ===== -->
             <template v-if="isReportMaximized">
               <div class="report-max-grid">
                 <div class="report-card">
@@ -2826,8 +2682,13 @@ const completionSummary = computed(() => {
     </div>
   </div>
 
+  <!-- Note editor popover -->
   <Teleport to="body">
-    <div v-if="editingNoteNodeId !== null" class="note-overlay" @click.self="cancelNote">
+    <div
+      v-if="editingNoteNodeId !== null"
+      class="note-overlay"
+      @click.self="cancelNote"
+    >
       <div class="note-editor">
         <h3 class="note-editor-title">
           📝 Move Note
@@ -2850,9 +2711,14 @@ const completionSummary = computed(() => {
     </div>
   </Teleport>
 
+  <!-- Shortcuts help -->
   <Teleport to="body">
     <Transition name="toast-fade">
-      <div v-if="showShortcuts" class="shortcuts-overlay" @click.self="showShortcuts = false">
+      <div
+        v-if="showShortcuts"
+        class="shortcuts-overlay"
+        @click.self="showShortcuts = false"
+      >
         <div class="shortcuts-panel">
           <div class="shortcuts-header">
             <h3>⌨️ Keyboard Shortcuts</h3>
@@ -2876,7 +2742,9 @@ const completionSummary = computed(() => {
       :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
       @click.stop
     >
-      <button class="context-menu-item delete" @click="handleDeleteFromMenu">Delete move</button>
+      <button class="context-menu-item delete" @click="handleDeleteFromMenu">
+        Delete move
+      </button>
     </div>
   </Teleport>
 
@@ -2981,17 +2849,19 @@ const completionSummary = computed(() => {
   background-color: var(--last-move-highlight, rgba(155, 199, 0, 0.41)) !important;
 }
 
+/* Kill the blue tap-flash on the board and on every button */
 button,
 :deep(.cg-wrap),
 :deep(.cg-wrap *) {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* ✦ FIXED: touch-action: none on ALL board elements so pieces can be
+   dragged freely in any direction. Previously pan-y on the board was
+   stealing vertical drags before the piece could capture them. */
 :deep(.cg-wrap),
 :deep(cg-container),
-:deep(cg-board) {
-  touch-action: pan-y !important;
-}
+:deep(cg-board),
 :deep(piece) {
   touch-action: none !important;
 }
@@ -3115,111 +2985,6 @@ button,
   margin-left: 0.25rem;
 }
 
-/* ✦ NEW: Chat bubble overlay on the board */
-.chat-bubble {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 30;
-  width: min(86%, 22rem);
-  background: rgba(15, 12, 8, 0.92);
-  backdrop-filter: blur(8px) saturate(140%);
-  -webkit-backdrop-filter: blur(8px) saturate(140%);
-  border: 1px solid var(--bubble-color, rgba(255,255,255,0.18));
-  border-left: 3px solid var(--bubble-color, #6ad13f);
-  border-radius: 12px;
-  padding: 0.4rem 0.65rem 0.45rem;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0,0,0,0.4);
-  pointer-events: none;
-  animation: bubbleIn 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
-}
-
-@keyframes bubbleIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.97); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
-}
-
-.chat-bubble.black .cb-dot {
-  background: #1a1a1a;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.45);
-}
-.chat-bubble.white .cb-dot {
-  background: #f4f0e3;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
-}
-
-.cb-head {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.66rem;
-  color: rgba(244, 240, 227, 0.7);
-  margin-bottom: 0.1rem;
-}
-
-.cb-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.cb-name {
-  font-weight: 700;
-  color: rgba(244, 240, 227, 0.92);
-  letter-spacing: 0.3px;
-  text-transform: capitalize;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 9rem;
-}
-
-.cb-rating {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.6rem;
-  color: rgba(244, 240, 227, 0.5);
-  background: rgba(255,255,255,0.06);
-  padding: 0 0.25rem;
-  border-radius: 4px;
-}
-
-.cb-body {
-  display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-  font-size: 0.78rem;
-  color: #f4f0e3;
-  font-weight: 600;
-}
-
-.cb-text {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cb-eval {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.72rem;
-  color: var(--bubble-color, #a8d97a);
-  font-weight: 700;
-  background: rgba(0,0,0,0.35);
-  padding: 0.05rem 0.35rem;
-  border-radius: 5px;
-  flex-shrink: 0;
-}
-
-.chat-pop-enter-active, .chat-pop-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.chat-pop-enter-from, .chat-pop-leave-to {
-  opacity: 0;
-  transform: translateX(-50%) translateY(-4px);
-}
-
 .analysis-container {
   grid-area: analysis;
   display: flex;
@@ -3238,7 +3003,8 @@ button,
   padding-bottom: 1rem;
   background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
   box-sizing: border-box;
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.08);
   margin: 0 auto;
   overflow-y: auto;
@@ -3498,12 +3264,7 @@ button,
   border-top-color: var(--text-highlight);
   animation: spinRing 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
 }
-.spinner-ring:nth-child(2) {
-  inset: 8px;
-  border-top-color: #a8d97a;
-  animation-duration: 1.6s;
-  animation-direction: reverse;
-}
+.spinner-ring:nth-child(2) { inset: 8px; border-top-color: #a8d97a; animation-duration: 1.6s; animation-direction: reverse; }
 .spinner-ring:nth-child(3) { inset: 16px; border-top-color: #f4f0e3; animation-duration: 2s; }
 
 @keyframes spinRing { to { transform: rotate(360deg); } }
@@ -3575,221 +3336,6 @@ button,
 
 .loading-fade-enter-active, .loading-fade-leave-active { transition: opacity 0.35s ease; }
 .loading-fade-enter-from, .loading-fade-leave-to { opacity: 0; }
-
-/* ✦ NEW: Completion modal styles */
-.completion-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2500;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(10, 8, 5, 0.55);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  padding: 1rem;
-}
-
-.completion-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 2.2rem 1.8rem 1.6rem;
-  width: min(94vw, 24rem);
-  background: linear-gradient(160deg, var(--panel-1, #262421), var(--panel-2, #1e1c18) 70%, #16130f);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 22px;
-  box-shadow: 0 25px 60px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.08);
-  overflow: hidden;
-  animation: completionPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-@keyframes completionPop {
-  from { opacity: 0; transform: scale(0.92) translateY(8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-.completion-glow {
-  position: absolute;
-  top: -60%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 200%;
-  height: 200%;
-  background: radial-gradient(circle at 50% 35%, rgba(106, 209, 63, 0.18), transparent 50%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.completion-card > * { position: relative; z-index: 1; }
-
-.completion-check {
-  margin-bottom: 0.3rem;
-}
-
-.check-path {
-  stroke-dasharray: 50;
-  stroke-dashoffset: 50;
-  animation: checkDraw 0.5s 0.2s ease forwards;
-}
-
-@keyframes checkDraw {
-  to { stroke-dashoffset: 0; }
-}
-
-.completion-title {
-  font-family: serif;
-  color: #f5f5dc;
-  font-size: 1.45rem;
-  font-weight: 700;
-  margin: 0;
-  letter-spacing: 0.5px;
-  text-shadow: 0 2px 8px rgba(0,0,0,0.4);
-}
-
-.completion-subtitle {
-  font-size: 0.82rem;
-  color: rgba(244, 240, 227, 0.65);
-  margin: 0 0 0.3rem;
-  text-align: center;
-}
-
-.completion-stats {
-  display: flex;
-  align-items: stretch;
-  gap: 0.5rem;
-  width: 100%;
-  margin: 0.4rem 0 0.3rem;
-}
-
-.completion-stat {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.15rem;
-  padding: 0.55rem 0.4rem;
-  background: rgba(0,0,0,0.25);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 12px;
-}
-
-.cs-name {
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: rgba(244, 240, 227, 0.8);
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.cs-acc {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 1.4rem;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.cs-rating {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.65rem;
-  color: rgba(244, 240, 227, 0.45);
-}
-
-.completion-divider {
-  display: flex;
-  align-items: center;
-  font-family: serif;
-  font-style: italic;
-  color: rgba(244, 240, 227, 0.4);
-  font-size: 0.8rem;
-}
-
-.completion-highlights {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.35rem;
-  margin-bottom: 0.4rem;
-}
-
-.ch-chip {
-  font-size: 0.7rem;
-  font-weight: 700;
-  padding: 0.25rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid;
-}
-
-.ch-chip.brilliant {
-  color: #03aea7;
-  border-color: rgba(3, 174, 167, 0.4);
-  background: rgba(3, 174, 167, 0.12);
-}
-.ch-chip.mistake {
-  color: #f38800;
-  border-color: rgba(243, 136, 0, 0.4);
-  background: rgba(243, 136, 0, 0.12);
-}
-.ch-chip.blunder {
-  color: #ff6b6b;
-  border-color: rgba(255, 60, 60, 0.4);
-  background: rgba(255, 60, 60, 0.12);
-}
-
-.completion-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.85rem 1.8rem;
-  border: none;
-  border-radius: 14px;
-  background: linear-gradient(145deg, #6ad13f, #4c8a2a);
-  color: #fff;
-  font-size: 1rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.22s ease;
-  box-shadow: 0 8px 20px rgba(106, 209, 63, 0.35), inset 0 1px 0 rgba(255,255,255,0.2);
-  text-shadow: 0 1px 2px rgba(0,0,0,0.25);
-  margin-top: 0.4rem;
-}
-
-.completion-cta:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 26px rgba(106, 209, 63, 0.45), inset 0 1px 0 rgba(255,255,255,0.25);
-}
-
-.completion-cta:active { transform: translateY(0); }
-
-.completion-skip {
-  background: none;
-  border: none;
-  color: rgba(244, 240, 227, 0.55);
-  font-size: 0.78rem;
-  padding: 0.35rem;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.completion-skip:hover { color: rgba(244, 240, 227, 0.8); }
-
-.completion-hint {
-  font-size: 0.66rem;
-  color: rgba(244, 240, 227, 0.35);
-  margin: 0.1rem 0 0;
-  font-style: italic;
-}
-
-.completion-fade-enter-active, .completion-fade-leave-active {
-  transition: opacity 0.35s ease;
-}
-.completion-fade-enter-from, .completion-fade-leave-to { opacity: 0; }
 
 /* ===== MOVES PANEL ======================================================= */
 .moves {
@@ -3918,11 +3464,7 @@ button,
   border-color: rgba(255, 255, 255, 0.05);
 }
 
-.move-cell:hover {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(255, 255, 255, 0.18);
-}
-
+.move-cell:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(255, 255, 255, 0.18); }
 .move-cell:active { transform: scale(0.97); }
 
 .move-cell.active {
@@ -3970,19 +3512,8 @@ button,
   letter-spacing: 0.2px;
 }
 
-.acc-badge {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.note-indicator {
-  font-size: 0.62rem;
-  opacity: 0.7;
-  cursor: help;
-  flex-shrink: 0;
-}
+.acc-badge { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; }
+.note-indicator { font-size: 0.62rem; opacity: 0.7; cursor: help; flex-shrink: 0; }
 
 .boardtools {
   display: grid;
@@ -4008,12 +3539,7 @@ button,
 }
 
 .boardtools-left { grid-column: 1; justify-self: start; }
-
-.share-menu-wrap {
-  grid-column: 3;
-  justify-self: end;
-  position: relative;
-}
+.share-menu-wrap { grid-column: 3; justify-self: end; position: relative; }
 
 .toolbar-icon-btn {
   display: flex;
@@ -4082,11 +3608,7 @@ button,
 }
 
 .reverse svg { display: block; }
-
-.reverse:disabled, .undo:disabled, .redo:disabled, .jumpstart:disabled, .jumpend:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+.reverse:disabled, .undo:disabled, .redo:disabled, .jumpstart:disabled, .jumpend:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .reverse:hover:not(:disabled), .undo:hover:not(:disabled), .redo:hover:not(:disabled),
 .jumpstart:hover:not(:disabled), .jumpend:hover:not(:disabled) {
@@ -4151,11 +3673,7 @@ button,
   overflow-x: auto;
 }
 
-.pretty-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) rgba(0, 0, 0, 0.15);
-}
-
+.pretty-scroll { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.2) rgba(0, 0, 0, 0.15); }
 .pretty-scroll::-webkit-scrollbar { height: 5px; }
 .pretty-scroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.15); border-radius: 10px; }
 .pretty-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 10px; }
@@ -4184,12 +3702,7 @@ button,
   pointer-events: none;
 }
 
-.line-move {
-  cursor: pointer;
-  padding: 0 2px;
-  border-radius: 4px;
-}
-
+.line-move { cursor: pointer; padding: 0 2px; border-radius: 4px; }
 .line-move:hover { background: rgba(103, 122, 228, 0.3); }
 
 .toast {
@@ -4205,13 +3718,8 @@ button,
   z-index: 1000;
 }
 
-.toast-fade-enter-active, .toast-fade-leave-active {
-  transition: opacity 0.25s ease, transform 0.25s ease;
-}
-.toast-fade-enter-from, .toast-fade-leave-to {
-  opacity: 0;
-  transform: translateX(-50%) translateY(8px);
-}
+.toast-fade-enter-active, .toast-fade-leave-active { transition: opacity 0.25s ease, transform 0.25s ease; }
+.toast-fade-enter-from, .toast-fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 
 .context-menu {
   position: fixed;
@@ -4366,6 +3874,7 @@ button,
   flex-shrink: 0;
 }
 
+/* ===== REPORT HEADER / MAXIMIZE / START REVIEW ========================== */
 .report-header {
   display: flex;
   align-items: center;
@@ -4381,6 +3890,42 @@ button,
   font-size: 0.9rem;
   margin: 0;
 }
+
+.report-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ✦ NEW: Start Review button — prominent green CTA in the maximized report */
+.start-review-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid rgba(106, 209, 63, 0.45);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(106, 209, 63, 0.22), rgba(106, 209, 63, 0.1));
+  color: #a8d97a;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.start-review-btn:hover {
+  background: linear-gradient(145deg, rgba(106, 209, 63, 0.32), rgba(106, 209, 63, 0.16));
+  box-shadow: 0 4px 14px rgba(106, 209, 63, 0.3);
+  transform: translateY(-1px);
+}
+
+.start-review-btn:active { transform: translateY(0); }
+
+.start-review-btn svg { flex-shrink: 0; }
 
 .report-expand-btn {
   display: inline-flex;
@@ -4399,6 +3944,7 @@ button,
 
 .report-expand-btn:hover { background: rgba(255, 255, 255, 0.1); color: #f4f0e3; }
 
+/* ✦ CHANGED: maximized report now has blurred background backdrop */
 .report.maximized {
   position: fixed;
   inset: 0;
@@ -4410,7 +3956,9 @@ button,
   border: none;
   margin: 0;
   padding: 1.25rem clamp(1rem, 4vw, 3rem) 2.5rem;
-  background: linear-gradient(160deg, var(--panel-1, #262421), var(--panel-2, #1e1c18) 60%, #171512);
+  background: rgba(20, 17, 13, 0.82);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   box-shadow: none;
   display: flex;
   flex-direction: column;
@@ -4427,7 +3975,8 @@ button,
   position: sticky;
   top: 0;
   z-index: 5;
-  background: linear-gradient(180deg, var(--panel-1, #262421) 75%, transparent);
+  background: linear-gradient(180deg, rgba(20, 17, 13, 0.95) 75%, transparent);
+  backdrop-filter: blur(8px);
   padding: 0.35rem 0 0.5rem;
 }
 
@@ -4478,6 +4027,7 @@ button,
   font-style: italic;
 }
 
+/* ===== EVAL GRAPH ======================================================= */
 .eval-graph-card { display: flex; flex-direction: column; gap: 0.45rem; }
 
 .eval-graph-head {
@@ -4496,10 +4046,7 @@ button,
   color: #f5f5dc;
 }
 
-.eval-graph-hint {
-  font-size: 0.68rem;
-  color: rgba(244, 240, 227, 0.45);
-}
+.eval-graph-hint { font-size: 0.68rem; color: rgba(244, 240, 227, 0.45); }
 
 .eval-graph-area {
   position: relative;
@@ -4614,6 +4161,7 @@ button,
 .eg-dot.mistake, .eg-hover-dot.mistake { background: #f38800; }
 .eg-dot.blunder, .eg-hover-dot.blunder { background: #ff0000; }
 
+/* ===== MAXIMIZED CARDS =================================================== */
 .report-bar-block { display: flex; flex-direction: column; gap: 0.3rem; }
 
 .report-bar-label {
@@ -4796,6 +4344,7 @@ button,
   flex-shrink: 0;
 }
 
+/* ===== NOTE EDITOR ====================================================== */
 .note-overlay {
   position: fixed;
   inset: 0;
@@ -4880,6 +4429,7 @@ button,
   background: linear-gradient(145deg, rgba(168, 217, 122, 0.4), rgba(106, 209, 63, 0.3));
 }
 
+/* ===== SHORTCUTS PANEL =================================================== */
 .shortcuts-overlay {
   position: fixed;
   inset: 0;
@@ -4933,6 +4483,7 @@ button,
 
 .shortcut-row span { color: rgba(244, 240, 227, 0.8); font-size: 0.85rem; }
 
+/* ===== EXPLORER ========================================================== */
 .explorer {
   padding: 0.6rem 0.5rem 0.6rem;
   box-sizing: border-box;
@@ -5100,7 +4651,7 @@ button,
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-/* ===== ✦ CHANGED: MOBILE STICKY + MINIMAL SCROLL ======================= */
+/* ===== ✦ MOBILE: STICKY TITLE + MINIMAL SCROLL =========================== */
 @media (max-width: 767px) {
   .acc-badge { width: 19px; height: 19px; }
   .board-acc-icon { width: 5.2%; height: 5.2%; }
@@ -5112,7 +4663,6 @@ button,
     min-height: 100dvh;
     padding: 0;
     gap: 0;
-    padding-top: 0;
   }
 
   .board-area,
@@ -5121,7 +4671,7 @@ button,
     display: contents;
   }
 
-  /* ✦ NEW: sticky title slot at top */
+  /* ✦ sticky title at top */
   .title-slot {
     order: 0;
     position: sticky;
@@ -5201,11 +4751,8 @@ button,
     gap: 0.35rem;
   }
 
-  /* ✦ NEW: hide the "ANALYSIS" title text on mobile */
-  .analyzis {
-    display: none !important;
-  }
-
+  /* ✦ hide "ANALYSIS" title on mobile */
+  .analyzis { display: none !important; }
   .analysis-title-row { min-height: 0; display: none !important; }
 
   .desktop-settings { display: none; }
@@ -5251,7 +4798,7 @@ button,
     50% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(106, 209, 63, 0.55); }
   }
 
-  /* ✦ NEW: shorter panel for minimal scrolling */
+  /* ✦ shorter moves panel for minimal scrolling */
   .moves {
     flex: 0 1 auto;
     min-height: 140px;
@@ -5290,6 +4837,13 @@ button,
   .accuracy-score { margin: 0.2rem 0 0.4rem; }
   .est-rating { margin-bottom: 0.5rem; padding-bottom: 0.4rem; }
   .report-row { padding: 0.2rem 0.25rem; }
+
+  /* ✦ Start Review button on mobile */
+  .start-review-btn {
+    padding: 0.42rem 0.75rem;
+    font-size: 0.72rem;
+    gap: 0.3rem;
+  }
 
   .explorer {
     padding: 0.4rem 0.5rem 0.6rem;
@@ -5332,16 +4886,5 @@ button,
     width: min(92vw, 20rem);
     padding: 1rem 1.1rem;
   }
-
-  /* ✦ NEW: chat bubble tweaks on mobile */
-  .chat-bubble {
-    top: 6px;
-    width: min(92%, 18rem);
-    padding: 0.35rem 0.55rem 0.4rem;
-  }
-  .cb-head { font-size: 0.62rem; gap: 0.3rem; }
-  .cb-name { max-width: 7rem; }
-  .cb-body { font-size: 0.75rem; }
-  .cb-eval { font-size: 0.68rem; }
 }
 </style>
