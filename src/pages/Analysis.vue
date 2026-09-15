@@ -4801,7 +4801,7 @@
     /* shorter moves panel for minimal scrolling */
     .moves {
       flex: 0 1 auto;
-      min-height: 140px;
+      min-height: 300px;
       max-height: 300px;
       height: auto;
       max-width: none;
@@ -4841,7 +4841,7 @@
     /* ✦ Start Review button on mobile */
     .start-review-btn {
       padding: 0.42rem 0.75rem;
-      font-size: 0.72rem;
+      font-size: 0.7a2rem;
       gap: 0.3rem;
     }
 
