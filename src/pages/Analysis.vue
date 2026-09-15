@@ -101,6 +101,9 @@ const activeTab = ref('moves')
 const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: null })
 const shareMenuOpen = ref(false)
 
+// ✦ NEW: Analysis completion modal
+const analysisComplete = ref(false)
+
 const audioCache = {
   move: new Audio(moveSfx),
   capture: new Audio(captureSfx),
@@ -205,6 +208,59 @@ watch([lastMoveFromSquare, lastMoveSquare], ([from, to]) => {
   if (!boardAPI.value) return
   boardAPI.value.setConfig({ lastMove: from && to ? [from, to] : undefined })
 })
+
+// ✦ NEW: determine whose move was just played + chat-style description
+const lastMovePly = computed(() => {
+  if (!currentNode.value.san) return 0
+  let n = currentNode.value
+  let ply = 0
+  while (n.parent !== null) { ply++; n = n.parent }
+  return ply
+})
+
+const lastMoveSide = computed(() => {
+  const ply = lastMovePly.value
+  if (ply === 0) return null
+  return ply % 2 === 1 ? 'white' : 'black'
+})
+
+const lastMovePlayerName = computed(() => {
+  const side = lastMoveSide.value
+  if (!side) return ''
+  return side === 'white' ? whiteName.value : blackName.value
+})
+
+const lastMovePlayerRating = computed(() => {
+  const side = lastMoveSide.value
+  if (!side) return null
+  return side === 'white' ? whiteRating.value : blackRating.value
+})
+
+// Chat-style short description (e.g. "Bb7 is theoretical" or "Nf3 — Best move")
+const chatBubbleText = computed(() => {
+  if (!currentNode.value.san || !moveData.value) return ''
+  const san = currentNode.value.san
+  const acc = moveData.value.move_accuracy
+  const map = {
+    brilliant: `${prettyMove(san)}! Brilliant`,
+    great: `${prettyMove(san)} — Great move`,
+    best: `${prettyMove(san)} — Best move`,
+    excellent: `${prettyMove(san)} — Excellent`,
+    good: `${prettyMove(san)} — Good`,
+    book: `${prettyMove(san)} — Book move`,
+    inaccuracy: `${prettyMove(san)}? Inaccuracy`,
+    mistake: `${prettyMove(san)}?? Mistake`,
+    blunder: `${prettyMove(san)}??? Blunder`
+  }
+  return map[acc] || prettyMove(san)
+})
+
+const chatBubbleColor = computed(() => {
+  if (!moveData.value?.move_accuracy) return '#ad8760'
+  return accuracyColors[moveData.value.move_accuracy] || '#ad8760'
+})
+
+const chatBubbleEval = computed(() => formatEval(moveData.value?.eval))
 
 function isExplorerOutOfBook(node, db) {
   let n = node
@@ -660,7 +716,6 @@ function evalGraphClick(event) {
   if (target) jumpToNode(target.nodeId)
 }
 
-// Hover crosshair: shows evaluation of the exact position under the cursor
 function evalGraphHover(event) {
   const geom = evalGraphGeom.value
   if (!geom) return
@@ -758,6 +813,21 @@ function toggleReportMaximize() { isReportMaximized.value = !isReportMaximized.v
 watch(isReportMaximized, (max) => {
   document.body.style.overflow = max ? 'hidden' : ''
 })
+
+// ✦ NEW: Start full review from completion modal
+function startFullReview() {
+  analysisComplete.value = false
+  isReportMaximized.value = true
+  activeTab.value = 'report'
+  document.body.style.overflow = 'hidden'
+}
+
+// ✦ NEW: Dismiss completion modal & continue to moves tab
+function dismissCompletion() {
+  analysisComplete.value = false
+  activeTab.value = 'moves'
+  document.body.style.overflow = ''
+}
 
 function handleBothMoves(move) {
   if (isImporting.value) return
@@ -969,7 +1039,6 @@ function formatEval(evalObj) {
     if (evalObj.type === "cp") return (evalObj.value / 100).toFixed(2)
     if (evalObj.type === "mate") return `M${evalObj.value}`
   }
-  // Fall back to game result if no evaluation available
   if (chess.isGameOver()) {
     if (chess.isCheckmate()) return chess.turn() === 'w' ? '0-1' : '1-0'
     if (chess.isStalemate() || chess.isInsufficientMaterial() || chess.isThreefoldRepetition() || chess.isDraw()) return '1/2-1/2'
@@ -1145,6 +1214,7 @@ const handleKeyDown = (event) => {
     closeContextMenu()
     showShortcuts.value = false
     editingNoteNodeId.value = null
+    if (analysisComplete.value) { analysisComplete.value = false; document.body.style.overflow = '' }
     if (isReportMaximized.value) isReportMaximized.value = false
     return
   }
@@ -1226,6 +1296,7 @@ async function loadImportedGame(uciList) {
   importCancelled = false
   importProgress.value = { current: 0, total: uciList.length }
   isEngineEnabled.value = false
+  document.body.style.overflow = 'hidden'
   try {
     for (const uci of uciList) {
       if (importCancelled) break
@@ -1239,11 +1310,14 @@ async function loadImportedGame(uciList) {
       goToStart()
       treeVersion.value++
       await saveGameInsights()
+      // ✦ NEW: trigger completion modal instead of just switching tab
+      analysisComplete.value = true
       activeTab.value = 'report'
     }
   } finally {
     isImporting.value = false
     isEngineEnabled.value = false
+    document.body.style.overflow = ''
     getAccuracy()
   }
 }
@@ -1267,6 +1341,7 @@ async function cancelImport() {
   isImporting.value = false
   resetAccuracy()
   hasPlayerInfo.value = false
+  document.body.style.overflow = ''
   router.replace({ path: '/', query: {} })
 }
 
@@ -1807,7 +1882,6 @@ function jumpToMoment(m) {
   jumpToNode(m.nodeId)
 }
 
-// ===== JUMP TO FIRST MOVE OF A CLASSIFICATION ============================
 function jumpToClassification(side, key) {
   const stats = gameReportStats.value
   if (!stats || !stats[side] || stats[side].counts[key] === 0) return
@@ -1825,7 +1899,6 @@ function jumpToClassification(side, key) {
   }
 }
 
-// ===== PER-GAME PIECE ACCURACY ===========================================
 const pieceMetaLocal = [
   { key: 'p', label: 'Pawn', symbol: '♟' },
   { key: 'n', label: 'Knight', symbol: '♞' },
@@ -1863,6 +1936,24 @@ const gamePieceStats = computed(() => {
     white: { count: white[p.key].count, acc: avg(white[p.key]) },
     black: { count: black[p.key].count, acc: avg(black[p.key]) }
   }))
+})
+
+// ✦ NEW: Summary preview for completion modal
+const completionSummary = computed(() => {
+  if (!gameReportStats.value) return null
+  const w = gameReportStats.value.white
+  const b = gameReportStats.value.black
+  const totalMoves = (w.moveCount ?? 0) + (b.moveCount ?? 0)
+  return {
+    whiteAcc: w.accuracy,
+    blackAcc: b.accuracy,
+    whiteRating: estimatedRatings.value.white,
+    blackRating: estimatedRatings.value.black,
+    totalMoves: Math.ceil(totalMoves / 2),
+    blunders: (w.counts.blunder ?? 0) + (b.counts.blunder ?? 0),
+    mistakes: (w.counts.mistake ?? 0) + (b.counts.mistake ?? 0),
+    brilliant: (w.counts.brilliant ?? 0) + (b.counts.brilliant ?? 0)
+  }
 })
 </script>
 
@@ -1909,6 +2000,70 @@ const gamePieceStats = computed(() => {
       </div>
     </div>
   </Transition>
+
+  <!-- ✦ NEW: Analysis completion modal with blurred background -->
+  <Teleport to="body">
+    <Transition name="completion-fade">
+      <div v-if="analysisComplete" class="completion-overlay" @click.self="dismissCompletion">
+        <div class="completion-card">
+          <div class="completion-glow"></div>
+          <div class="completion-check">
+            <svg viewBox="0 0 52 52" width="56" height="56">
+              <circle cx="26" cy="26" r="25" fill="none" stroke="#6ad13f" stroke-width="2.5" opacity="0.4"/>
+              <path fill="none" stroke="#6ad13f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"
+                d="M14 27 L22 35 L38 17" class="check-path"/>
+            </svg>
+          </div>
+          <h2 class="completion-title">Analysis Complete</h2>
+          <p class="completion-subtitle" v-if="completionSummary">
+            {{ whiteName }} vs {{ blackName }} · {{ completionSummary.totalMoves }} moves
+          </p>
+
+          <div class="completion-stats" v-if="completionSummary">
+            <div class="completion-stat">
+              <div class="cs-name">{{ whiteName }}</div>
+              <div class="cs-acc" :style="{ color: accColorForWeight(completionSummary.whiteAcc) }">
+                {{ completionSummary.whiteAcc !== null ? completionSummary.whiteAcc.toFixed(1) + '%' : '—' }}
+              </div>
+              <div class="cs-rating" v-if="completionSummary.whiteRating">~{{ completionSummary.whiteRating }}</div>
+            </div>
+            <div class="completion-divider">vs</div>
+            <div class="completion-stat">
+              <div class="cs-name">{{ blackName }}</div>
+              <div class="cs-acc" :style="{ color: accColorForWeight(completionSummary.blackAcc) }">
+                {{ completionSummary.blackAcc !== null ? completionSummary.blackAcc.toFixed(1) + '%' : '—' }}
+              </div>
+              <div class="cs-rating" v-if="completionSummary.blackRating">~{{ completionSummary.blackRating }}</div>
+            </div>
+          </div>
+
+          <div class="completion-highlights" v-if="completionSummary">
+            <span class="ch-chip brilliant" v-if="completionSummary.brilliant">
+              ✨ {{ completionSummary.brilliant }} Brilliant
+            </span>
+            <span class="ch-chip mistake" v-if="completionSummary.mistakes">
+              ⚠️ {{ completionSummary.mistakes }} Mistakes
+            </span>
+            <span class="ch-chip blunder" v-if="completionSummary.blunders">
+              💥 {{ completionSummary.blunders }} Blunders
+            </span>
+          </div>
+
+          <button class="completion-cta" @click="startFullReview">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+              stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14M13 6l6 6-6 6"/>
+            </svg>
+            Start Review
+          </button>
+          <button class="completion-skip" @click="dismissCompletion">
+            Continue browsing moves
+          </button>
+          <p class="completion-hint">Tip: press Esc to dismiss</p>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 
   <div class="grid-layout">
     <Title class="title-slot" />
@@ -1963,6 +2118,25 @@ const gamePieceStats = computed(() => {
               class="board-acc-icon"
               :style="squareStyle(lastMoveSquare)"
             />
+            <!-- ✦ NEW: Chat-style move bubble overlay -->
+            <Transition name="chat-pop">
+              <div
+                v-if="chatBubbleText && hasPlayerInfo"
+                class="chat-bubble"
+                :style="{ '--bubble-color': chatBubbleColor }"
+                :class="lastMoveSide"
+              >
+                <div class="cb-head">
+                  <span class="cb-dot"></span>
+                  <span class="cb-name">{{ lastMovePlayerName }}</span>
+                  <span v-if="lastMovePlayerRating" class="cb-rating">{{ lastMovePlayerRating }}</span>
+                </div>
+                <div class="cb-body">
+                  <span class="cb-text">{{ chatBubbleText }}</span>
+                  <span class="cb-eval" v-if="chatBubbleEval && chatBubbleEval !== ' '">{{ chatBubbleEval }}</span>
+                </div>
+              </div>
+            </Transition>
           </div>
           <div
             class="evalbar"
@@ -2165,10 +2339,7 @@ const gamePieceStats = computed(() => {
             <label class="engine-toggle" :class="{ active: isEngineEnabled }">
               <input type="checkbox" v-model="isEngineEnabled" />
               <span class="toggle-slider"></span>
-              <span
-                class="toggle-label"
-                >{{ isEngineEnabled ? 'ON' : 'OFF' }}</span
-              >
+              <span class="toggle-label">{{ isEngineEnabled ? 'ON' : 'OFF' }}</span>
             </label>
           </div>
         </div>
@@ -2188,10 +2359,7 @@ const gamePieceStats = computed(() => {
             class="secondline pretty-scroll"
             v-if="excellentSanLine.length && isEngineEnabled"
           >
-            <span
-              class="evalnum3"
-              >{{ moveData?.excellent_eval ? formatEval(moveData.excellent_eval) : " " }}</span
-            >
+            <span class="evalnum3">{{ moveData?.excellent_eval ? formatEval(moveData.excellent_eval) : " " }}</span>
             <span
               v-for="(move, idx) in excellentSanLine"
               :key="'exc-' + idx"
@@ -2205,10 +2373,7 @@ const gamePieceStats = computed(() => {
             class="secondline pretty-scroll"
             v-if="thirdSanLine.length && isEngineEnabled"
           >
-            <span
-              class="evalnum3"
-              >{{ moveData?.third_eval ? formatEval(moveData.third_eval) : " " }}</span
-            >
+            <span class="evalnum3">{{ moveData?.third_eval ? formatEval(moveData.third_eval) : " " }}</span>
             <span
               v-for="(move, idx) in thirdSanLine"
               :key="'third-' + idx"
@@ -2277,7 +2442,7 @@ const gamePieceStats = computed(() => {
                     v-if="cell.node.note"
                     class="note-indicator"
                     title="Has note"
-                  >📝</span
+                    >📝</span
                   >
                   <img
                     v-if="cell.node.accuracy"
@@ -2291,7 +2456,6 @@ const gamePieceStats = computed(() => {
           </template>
         </div>
 
-        <!-- ============ REPORT (teleported to body when maximized) ============ -->
         <Teleport
           to="body"
           :disabled="!isReportMaximized"
@@ -2340,20 +2504,14 @@ const gamePieceStats = computed(() => {
                   <span class="side-swatch white-swatch"></span>
                   <span>White</span>
                 </div>
-                <div
-                  class="accuracy-score"
-                  v-if="gameReportStats.white.accuracy !== null"
-                >
+                <div class="accuracy-score" v-if="gameReportStats.white.accuracy !== null">
                   {{ gameReportStats.white.accuracy.toFixed(1) }}
                   <span class="accuracy-percent">%</span>
                 </div>
                 <div class="accuracy-score empty" v-else>—</div>
                 <div class="est-rating" v-if="estimatedRatings.white !== null">
                   <span class="est-rating-label">Est. Rating</span>
-                  <span
-                    class="est-rating-value"
-                    >{{ estimatedRatings.white }}</span
-                  >
+                  <span class="est-rating-value">{{ estimatedRatings.white }}</span>
                 </div>
                 <div class="est-rating empty" v-else>
                   <span class="est-rating-label">Est. Rating</span>
@@ -2367,20 +2525,13 @@ const gamePieceStats = computed(() => {
                     dim: gameReportStats.white.counts[key] === 0,
                     clickable: gameReportStats.white.counts[key] > 0
                   }"
-                  :title="gameReportStats.white.counts[key] > 0 ? 'Jump to first ' + classificationMeta[key].label + ' move' : ''"
                   @click="jumpToClassification('white', key)"
                 >
                   <img :src="accuracySymbol(key)" class="report-row-icon" />
-                  <span
-                    class="report-row-label"
-                    :style="{ color: classificationMeta[key].color }"
-                  >
+                  <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
                     {{ classificationMeta[key].label }}
                   </span>
-                  <span
-                    class="report-row-count"
-                    >{{ gameReportStats.white.counts[key] }}</span
-                  >
+                  <span class="report-row-count">{{ gameReportStats.white.counts[key] }}</span>
                 </div>
               </div>
               <div class="report-col">
@@ -2388,20 +2539,14 @@ const gamePieceStats = computed(() => {
                   <span class="side-swatch black-swatch"></span>
                   <span>Black</span>
                 </div>
-                <div
-                  class="accuracy-score"
-                  v-if="gameReportStats.black.accuracy !== null"
-                >
+                <div class="accuracy-score" v-if="gameReportStats.black.accuracy !== null">
                   {{ gameReportStats.black.accuracy.toFixed(1) }}
                   <span class="accuracy-percent">%</span>
                 </div>
                 <div class="accuracy-score empty" v-else>—</div>
                 <div class="est-rating" v-if="estimatedRatings.black !== null">
                   <span class="est-rating-label">Est. Rating</span>
-                  <span
-                    class="est-rating-value"
-                    >{{ estimatedRatings.black }}</span
-                  >
+                  <span class="est-rating-value">{{ estimatedRatings.black }}</span>
                 </div>
                 <div class="est-rating empty" v-else>
                   <span class="est-rating-label">Est. Rating</span>
@@ -2415,31 +2560,21 @@ const gamePieceStats = computed(() => {
                     dim: gameReportStats.black.counts[key] === 0,
                     clickable: gameReportStats.black.counts[key] > 0
                   }"
-                  :title="gameReportStats.black.counts[key] > 0 ? 'Jump to first ' + classificationMeta[key].label + ' move' : ''"
                   @click="jumpToClassification('black', key)"
                 >
                   <img :src="accuracySymbol(key)" class="report-row-icon" />
-                  <span
-                    class="report-row-label"
-                    :style="{ color: classificationMeta[key].color }"
-                  >
+                  <span class="report-row-label" :style="{ color: classificationMeta[key].color }">
                     {{ classificationMeta[key].label }}
                   </span>
-                  <span
-                    class="report-row-count"
-                    >{{ gameReportStats.black.counts[key] }}</span
-                  >
+                  <span class="report-row-count">{{ gameReportStats.black.counts[key] }}</span>
                 </div>
               </div>
             </div>
 
-            <!-- ===== EVAL GRAPH (Lichess-style area chart) ===== -->
             <div class="eval-graph-card" v-if="evalGraphGeom">
               <div class="eval-graph-head">
                 <span class="eval-graph-title">Evaluation Graph</span>
-                <span class="eval-graph-hint"
-                  >Hover to inspect · Click to jump to a move</span
-                >
+                <span class="eval-graph-hint">Hover to inspect · Click to jump to a move</span>
               </div>
               <div
                 class="eval-graph-area"
@@ -2447,11 +2582,7 @@ const gamePieceStats = computed(() => {
                 @mousemove="evalGraphHover"
                 @mouseleave="graphHoverIdx = -1"
               >
-                <svg
-                  class="eval-graph-svg"
-                  viewBox="0 0 1000 300"
-                  preserveAspectRatio="none"
-                >
+                <svg class="eval-graph-svg" viewBox="0 0 1000 300" preserveAspectRatio="none">
                   <path :d="evalGraphGeom.blackArea" class="eg-black" />
                   <path :d="evalGraphGeom.whiteArea" class="eg-white" />
                   <line x1="0" y1="150" x2="1000" y2="150" class="eg-center" />
@@ -2461,12 +2592,8 @@ const gamePieceStats = computed(() => {
                   class="eg-current"
                   :style="{ left: evalGraphGeom.coords[evalGraphGeom.currentIdx].xPct + '%' }"
                 ></div>
-                <!-- hover crosshair + single tooltip for the exact hovered position -->
                 <template v-if="graphHoverData">
-                  <div
-                    class="eg-hover-line"
-                    :style="{ left: graphHoverData.pt.xPct + '%' }"
-                  ></div>
+                  <div class="eg-hover-line" :style="{ left: graphHoverData.pt.xPct + '%' }"></div>
                   <div
                     class="eg-hover-dot"
                     :class="graphHoverData.pt.accuracy || 'plain'"
@@ -2477,9 +2604,7 @@ const gamePieceStats = computed(() => {
                     :class="{ below: graphHoverData.below }"
                     :style="{ left: graphHoverData.leftPct + '%' }"
                   >
-                    <span class="eg-tooltip-move"
-                      >{{ graphHoverData.label }}{{ graphHoverData.san ? ' ' + graphHoverData.san : '' }}</span
-                    >
+                    <span class="eg-tooltip-move">{{ graphHoverData.label }}{{ graphHoverData.san ? ' ' + graphHoverData.san : '' }}</span>
                     <span class="eg-tooltip-eval">{{ graphHoverData.evalText }}</span>
                     <span
                       v-if="graphHoverData.accLabel"
@@ -2500,26 +2625,15 @@ const gamePieceStats = computed(() => {
               </div>
             </div>
 
-            <!-- ===== MAXIMIZED-ONLY SECTIONS ===== -->
             <template v-if="isReportMaximized">
               <div class="report-max-grid">
-                <!-- Move classification distribution -->
                 <div class="report-card">
                   <h4 class="report-card-title">Move Classification</h4>
-                  <div
-                    v-for="bar in reportBars"
-                    :key="bar.side"
-                    class="report-bar-block"
-                  >
+                  <div v-for="bar in reportBars" :key="bar.side" class="report-bar-block">
                     <div class="report-bar-label">
-                      <span
-                        class="side-swatch"
-                        :class="bar.side + '-swatch'"
-                      ></span>
+                      <span class="side-swatch" :class="bar.side + '-swatch'"></span>
                       {{ bar.side === 'white' ? 'White' : 'Black' }}
-                      <span class="report-bar-total"
-                        >{{ bar.total }} moves</span
-                      >
+                      <span class="report-bar-total">{{ bar.total }} moves</span>
                     </div>
                     <div class="report-bar">
                       <div
@@ -2533,63 +2647,38 @@ const gamePieceStats = computed(() => {
                   </div>
                 </div>
 
-                <!-- Phase accuracy -->
                 <div class="report-card" v-if="gameExtendedStats">
                   <h4 class="report-card-title">Accuracy by Phase</h4>
                   <div class="phase-rows">
-                    <div
-                      v-for="phase in ['opening', 'middlegame', 'endgame']"
-                      :key="phase"
-                      class="phase-row"
-                    >
-                      <span
-                        class="phase-row-name"
-                        >{{ phase.charAt(0).toUpperCase() + phase.slice(1) }}</span
-                      >
+                    <div v-for="phase in ['opening', 'middlegame', 'endgame']" :key="phase" class="phase-row">
+                      <span class="phase-row-name">{{ phase.charAt(0).toUpperCase() + phase.slice(1) }}</span>
                       <div class="phase-row-vals">
-                        <span
-                          class="phase-val-chip"
-                          :style="{ color: accColorForWeight(gameExtendedStats.white.phases[phase]) }"
-                        >
+                        <span class="phase-val-chip" :style="{ color: accColorForWeight(gameExtendedStats.white.phases[phase]) }">
                           <span class="color-indicator white"></span>
                           {{ fmtAcc(gameExtendedStats.white.phases[phase]) }}
                         </span>
-                        <span
-                          class="phase-val-chip"
-                          :style="{ color: accColorForWeight(gameExtendedStats.black.phases[phase]) }"
-                        >
+                        <span class="phase-val-chip" :style="{ color: accColorForWeight(gameExtendedStats.black.phases[phase]) }">
                           <span class="color-indicator black"></span>
                           {{ fmtAcc(gameExtendedStats.black.phases[phase]) }}
                         </span>
                       </div>
                       <div class="phase-row-bars">
                         <div class="phase-mini-bar">
-                          <div
-                            :style="{ width: (gameExtendedStats.white.phases[phase] || 0) + '%', background: accColorForWeight(gameExtendedStats.white.phases[phase]) }"
-                          ></div>
+                          <div :style="{ width: (gameExtendedStats.white.phases[phase] || 0) + '%', background: accColorForWeight(gameExtendedStats.white.phases[phase]) }"></div>
                         </div>
                         <div class="phase-mini-bar">
-                          <div
-                            :style="{ width: (gameExtendedStats.black.phases[phase] || 0) + '%', background: accColorForWeight(gameExtendedStats.black.phases[phase]) }"
-                          ></div>
+                          <div :style="{ width: (gameExtendedStats.black.phases[phase] || 0) + '%', background: accColorForWeight(gameExtendedStats.black.phases[phase]) }"></div>
                         </div>
                       </div>
                     </div>
                   </div>
-                  <p class="report-card-note">
-                    Top bar / value = White · Bottom = Black
-                  </p>
+                  <p class="report-card-note">Top bar / value = White · Bottom = Black</p>
                 </div>
 
-                <!-- Accuracy by move number -->
                 <div class="report-card" v-if="gameExtendedStats">
                   <h4 class="report-card-title">Accuracy by Move Number</h4>
                   <div class="bucket-rows">
-                    <div
-                      v-for="label in moveBucketOrderLocal"
-                      :key="label"
-                      class="bucket-row"
-                    >
+                    <div v-for="label in moveBucketOrderLocal" :key="label" class="bucket-row">
                       <span class="bucket-row-label">{{ label }}</span>
                       <span
                         class="bucket-row-val"
@@ -2611,7 +2700,6 @@ const gamePieceStats = computed(() => {
                   </div>
                 </div>
 
-                <!-- Game stats -->
                 <div class="report-card" v-if="gameExtendedStats">
                   <h4 class="report-card-title">Game Stats</h4>
                   <div class="gstats-table">
@@ -2619,93 +2707,50 @@ const gamePieceStats = computed(() => {
                       <span></span><span>White</span><span>Black</span>
                     </div>
                     <div class="gstats-row">
-                      <span>Checks</span
-                      ><span>{{ gameExtendedStats.white.checks }}</span
-                      ><span>{{ gameExtendedStats.black.checks }}</span>
+                      <span>Checks</span><span>{{ gameExtendedStats.white.checks }}</span><span>{{ gameExtendedStats.black.checks }}</span>
                     </div>
                     <div class="gstats-row">
-                      <span>Captures</span
-                      ><span>{{ gameExtendedStats.white.captures }}</span
-                      ><span>{{ gameExtendedStats.black.captures }}</span>
+                      <span>Captures</span><span>{{ gameExtendedStats.white.captures }}</span><span>{{ gameExtendedStats.black.captures }}</span>
                     </div>
                     <div class="gstats-row">
-                      <span>Pawns lost (eval)</span
-                      ><span>{{ gameExtendedStats.white.cpLost }}</span
-                      ><span>{{ gameExtendedStats.black.cpLost }}</span>
+                      <span>Pawns lost (eval)</span><span>{{ gameExtendedStats.white.cpLost }}</span><span>{{ gameExtendedStats.black.cpLost }}</span>
                     </div>
                     <div class="gstats-row">
-                      <span>Swings gained</span
-                      ><span>{{ gameExtendedStats.white.swingsGained }}</span
-                      ><span>{{ gameExtendedStats.black.swingsGained }}</span>
+                      <span>Swings gained</span><span>{{ gameExtendedStats.white.swingsGained }}</span><span>{{ gameExtendedStats.black.swingsGained }}</span>
                     </div>
                   </div>
                 </div>
 
-                <!-- Accuracy by piece -->
-                <div
-                  class="report-card"
-                  v-if="gamePieceStats.some(p => p.white.count || p.black.count)"
-                >
+                <div class="report-card" v-if="gamePieceStats.some(p => p.white.count || p.black.count)">
                   <h4 class="report-card-title">Accuracy by Piece</h4>
                   <div class="gstats-table">
                     <div class="gstats-head">
                       <span></span><span>White</span><span>Black</span>
                     </div>
-                    <div
-                      v-for="p in gamePieceStats"
-                      :key="p.key"
-                      class="gstats-row piece-row"
-                    >
+                    <div v-for="p in gamePieceStats" :key="p.key" class="gstats-row piece-row">
                       <span class="piece-cell">
                         <span class="piece-sym">{{ p.symbol }}</span>
                         {{ p.label }}
-                        <span class="piece-counts"
-                          >({{ p.white.count }}/{{ p.black.count }})</span
-                        >
+                        <span class="piece-counts">({{ p.white.count }}/{{ p.black.count }})</span>
                       </span>
-                      <span
-                        :style="{ color: accColorForWeight(p.white.acc) }"
-                        >{{ fmtAcc(p.white.acc) }}</span
-                      >
-                      <span
-                        :style="{ color: accColorForWeight(p.black.acc) }"
-                        >{{ fmtAcc(p.black.acc) }}</span
-                      >
+                      <span :style="{ color: accColorForWeight(p.white.acc) }">{{ fmtAcc(p.white.acc) }}</span>
+                      <span :style="{ color: accColorForWeight(p.black.acc) }">{{ fmtAcc(p.black.acc) }}</span>
                     </div>
                   </div>
-                  <p class="report-card-note">
-                    Move counts per side shown as (White/Black)
-                  </p>
+                  <p class="report-card-note">Move counts per side shown as (White/Black)</p>
                 </div>
 
-                <!-- Key moments -->
                 <div class="report-card" v-if="keyMoments.length">
                   <h4 class="report-card-title">Key Moments</h4>
                   <div class="moments-list">
-                    <button
-                      v-for="m in keyMoments"
-                      :key="'km-' + m.nodeId"
-                      class="moment-row"
-                      @click="jumpToMoment(m)"
-                    >
+                    <button v-for="m in keyMoments" :key="'km-' + m.nodeId" class="moment-row" @click="jumpToMoment(m)">
                       <span class="moment-side" :class="m.side"></span>
-                      <span class="moment-san"
-                        >{{ Math.ceil(m.ply / 2)
-                        }}{{ m.ply % 2 === 1 ? '.' : '...' }} {{ m.san }}</span
-                      >
-                      <img
-                        v-if="accuracySymbol(m.accuracy)"
-                        :src="accuracySymbol(m.accuracy)"
-                        class="moment-icon"
-                      />
-                      <span class="moment-swing"
-                        >{{ (m.swing / 100).toFixed(1) }} cp swing</span
-                      >
+                      <span class="moment-san">{{ Math.ceil(m.ply / 2) }}{{ m.ply % 2 === 1 ? '.' : '...' }} {{ m.san }}</span>
+                      <img v-if="accuracySymbol(m.accuracy)" :src="accuracySymbol(m.accuracy)" class="moment-icon" />
+                      <span class="moment-swing">{{ (m.swing / 100).toFixed(1) }} cp swing</span>
                     </button>
                   </div>
-                  <p class="report-card-note">
-                    Click a moment to jump to it on the board
-                  </p>
+                  <p class="report-card-note">Click a moment to jump to it on the board</p>
                 </div>
               </div>
             </template>
@@ -2714,33 +2759,17 @@ const gamePieceStats = computed(() => {
 
         <div class="explorer" v-else-if="activeTab === 'explorer'">
           <div class="explorer-db-toggle">
-            <button
-              :class="{ active: explorerDb === 'masters' }"
-              @click="explorerDb = 'masters'"
-            >
-              Masters
-            </button>
-            <button
-              :class="{ active: explorerDb === 'lichess' }"
-              @click="explorerDb = 'lichess'"
-            >
-              Players
-            </button>
+            <button :class="{ active: explorerDb === 'masters' }" @click="explorerDb = 'masters'">Masters</button>
+            <button :class="{ active: explorerDb === 'lichess' }" @click="explorerDb = 'lichess'">Players</button>
           </div>
           <div v-if="explorerLoading" class="explorer-status">
             <div class="mini-spinner"></div>
             Loading {{ explorerDb === 'masters' ? 'master' : 'player' }} games…
           </div>
-          <div v-else-if="explorerError" class="explorer-status error">
-            {{ explorerError }}
-          </div>
+          <div v-else-if="explorerError" class="explorer-status error">{{ explorerError }}</div>
           <template v-else>
             <div class="explorer-header">
-              <span
-                class="explorer-eco"
-                v-if="openingEco"
-                >{{ openingEco }}</span
-              >
+              <span class="explorer-eco" v-if="openingEco">{{ openingEco }}</span>
               <span class="explorer-name">{{ opening }}</span>
             </div>
             <div class="explorer-table" v-if="explorerMoves.length">
@@ -2749,12 +2778,7 @@ const gamePieceStats = computed(() => {
                 <span class="col-games">Games</span>
                 <span class="col-split">W / D / B</span>
               </div>
-              <div
-                v-for="m in explorerMoves"
-                :key="m.uci"
-                class="explorer-row"
-                @click="playExplorerMove(m.uci)"
-              >
+              <div v-for="m in explorerMoves" :key="m.uci" class="explorer-row" @click="playExplorerMove(m.uci)">
                 <span class="col-move">{{ prettyMove(m.san) }}</span>
                 <span class="col-games">
                   <span class="games-percent">{{ m.percent }}%</span>
@@ -2763,19 +2787,13 @@ const gamePieceStats = computed(() => {
                 <span class="col-split">
                   <div class="split-bar">
                     <div class="split-white" :style="{ width: m.white + '%' }">
-                      <span v-if="m.white >= 15" class="split-pct"
-                        >{{ m.white }}%</span
-                      >
+                      <span v-if="m.white >= 15" class="split-pct">{{ m.white }}%</span>
                     </div>
                     <div class="split-draw" :style="{ width: m.draws + '%' }">
-                      <span v-if="m.draws >= 15" class="split-pct"
-                        >{{ m.draws }}%</span
-                      >
+                      <span v-if="m.draws >= 15" class="split-pct">{{ m.draws }}%</span>
                     </div>
                     <div class="split-black" :style="{ width: m.black + '%' }">
-                      <span v-if="m.black >= 15" class="split-pct"
-                        >{{ m.black }}%</span
-                      >
+                      <span v-if="m.black >= 15" class="split-pct">{{ m.black }}%</span>
                     </div>
                   </div>
                 </span>
@@ -2784,64 +2802,36 @@ const gamePieceStats = computed(() => {
                 <span class="col-move">Σ</span>
                 <span class="col-games">
                   <span class="games-percent">100%</span>
-                  <span
-                    class="games-count"
-                    >{{ formatCount(explorerStats.total) }}</span
-                  >
+                  <span class="games-count">{{ formatCount(explorerStats.total) }}</span>
                 </span>
                 <span class="col-split">
                   <div class="split-bar">
-                    <div
-                      class="split-white"
-                      :style="{ width: explorerStats.white + '%' }"
-                    >
-                      <span v-if="explorerStats.white >= 15" class="split-pct"
-                        >{{ explorerStats.white }}%</span
-                      >
+                    <div class="split-white" :style="{ width: explorerStats.white + '%' }">
+                      <span v-if="explorerStats.white >= 15" class="split-pct">{{ explorerStats.white }}%</span>
                     </div>
-                    <div
-                      class="split-draw"
-                      :style="{ width: explorerStats.draws + '%' }"
-                    >
-                      <span v-if="explorerStats.draws >= 15" class="split-pct"
-                        >{{ explorerStats.draws }}%</span
-                      >
+                    <div class="split-draw" :style="{ width: explorerStats.draws + '%' }">
+                      <span v-if="explorerStats.draws >= 15" class="split-pct">{{ explorerStats.draws }}%</span>
                     </div>
-                    <div
-                      class="split-black"
-                      :style="{ width: explorerStats.black + '%' }"
-                    >
-                      <span v-if="explorerStats.black >= 15" class="split-pct"
-                        >{{ explorerStats.black }}%</span
-                      >
+                    <div class="split-black" :style="{ width: explorerStats.black + '%' }">
+                      <span v-if="explorerStats.black >= 15" class="split-pct">{{ explorerStats.black }}%</span>
                     </div>
                   </div>
                 </span>
               </div>
             </div>
-            <div class="explorer-status" v-else>
-              No games found for this position
-            </div>
+            <div class="explorer-status" v-else>No games found for this position</div>
           </template>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Note editor popover -->
   <Teleport to="body">
-    <div
-      v-if="editingNoteNodeId !== null"
-      class="note-overlay"
-      @click.self="cancelNote"
-    >
+    <div v-if="editingNoteNodeId !== null" class="note-overlay" @click.self="cancelNote">
       <div class="note-editor">
         <h3 class="note-editor-title">
           📝 Move Note
-          <span
-            class="note-editor-move"
-            >{{ nodeMap[editingNoteNodeId]?.san }}</span
-          >
+          <span class="note-editor-move">{{ nodeMap[editingNoteNodeId]?.san }}</span>
         </h3>
         <textarea
           v-model="noteDraft"
@@ -2860,20 +2850,13 @@ const gamePieceStats = computed(() => {
     </div>
   </Teleport>
 
-  <!-- Shortcuts help -->
   <Teleport to="body">
     <Transition name="toast-fade">
-      <div
-        v-if="showShortcuts"
-        class="shortcuts-overlay"
-        @click.self="showShortcuts = false"
-      >
+      <div v-if="showShortcuts" class="shortcuts-overlay" @click.self="showShortcuts = false">
         <div class="shortcuts-panel">
           <div class="shortcuts-header">
             <h3>⌨️ Keyboard Shortcuts</h3>
-            <button class="shortcuts-close" @click="showShortcuts = false">
-              ✕
-            </button>
+            <button class="shortcuts-close" @click="showShortcuts = false">✕</button>
           </div>
           <div class="shortcuts-list">
             <div v-for="s in shortcuts" :key="s.keys" class="shortcut-row">
@@ -2893,9 +2876,7 @@ const gamePieceStats = computed(() => {
       :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
       @click.stop
     >
-      <button class="context-menu-item delete" @click="handleDeleteFromMenu">
-        Delete move
-      </button>
+      <button class="context-menu-item delete" @click="handleDeleteFromMenu">Delete move</button>
     </div>
   </Teleport>
 
@@ -3000,18 +2981,12 @@ const gamePieceStats = computed(() => {
   background-color: var(--last-move-highlight, rgba(155, 199, 0, 0.41)) !important;
 }
 
-/* ===== ✦ NEW: TOUCH FIXES ============================================== */
-/* Kill the blue tap-flash on the board and on every button */
 button,
 :deep(.cg-wrap),
 :deep(.cg-wrap *) {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Vertical swipes that START on an empty square scroll the page.
-   Touches that start on a PIECE keep full drag control (any direction),
-   because the effective touch-action is the intersection along the chain:
-   piece(none) ∩ board(pan-y) = none. */
 :deep(.cg-wrap),
 :deep(cg-container),
 :deep(cg-board) {
@@ -3020,7 +2995,6 @@ button,
 :deep(piece) {
   touch-action: none !important;
 }
-/* ===== end touch fixes ================================================== */
 
 .board-row {
   display: flex;
@@ -3055,19 +3029,10 @@ button,
   position: relative;
 }
 
-.blackeval {
-  background-color: #38412e;
-  height: var(--eval, 50%);
-}
+.blackeval { background-color: #38412e; height: var(--eval, 50%); }
+.whiteeval { background-color: #626949; height: calc(100% - var(--eval, 50%)); }
 
-.whiteeval {
-  background-color: #626949;
-  height: calc(100% - var(--eval, 50%));
-}
-
-.evalbar.flipped .evalbar-inner {
-  flex-direction: column-reverse;
-}
+.evalbar.flipped .evalbar-inner { flex-direction: column-reverse; }
 
 .player-bar {
   display: flex;
@@ -3084,10 +3049,7 @@ button,
   box-sizing: border-box;
 }
 
-.player-bar.bottom {
-  margin-bottom: 0;
-  margin-top: 0.2rem;
-}
+.player-bar.bottom { margin-bottom: 0; margin-top: 0.2rem; }
 
 .player-color-dot {
   width: 0.6rem;
@@ -3097,13 +3059,8 @@ button,
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
 }
 
-.player-color-dot.white {
-  background: #f4f0e3;
-}
-
-.player-color-dot.black {
-  background: #1a1a1a;
-}
+.player-color-dot.white { background: #f4f0e3; }
+.player-color-dot.black { background: #1a1a1a; }
 
 .player-name {
   font-weight: 600;
@@ -3128,11 +3085,8 @@ button,
   flex-shrink: 0;
 }
 
-.player-rating + .captured-pieces {
-  margin-left: 0.5rem;
-}
+.player-rating + .captured-pieces { margin-left: 0.5rem; }
 
-/* ===== CAPTURED PIECES ================================================= */
 .captured-pieces {
   display: inline-flex;
   align-items: center;
@@ -3161,6 +3115,111 @@ button,
   margin-left: 0.25rem;
 }
 
+/* ✦ NEW: Chat bubble overlay on the board */
+.chat-bubble {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  width: min(86%, 22rem);
+  background: rgba(15, 12, 8, 0.92);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  border: 1px solid var(--bubble-color, rgba(255,255,255,0.18));
+  border-left: 3px solid var(--bubble-color, #6ad13f);
+  border-radius: 12px;
+  padding: 0.4rem 0.65rem 0.45rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0,0,0,0.4);
+  pointer-events: none;
+  animation: bubbleIn 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.97); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+.chat-bubble.black .cb-dot {
+  background: #1a1a1a;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.45);
+}
+.chat-bubble.white .cb-dot {
+  background: #f4f0e3;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
+}
+
+.cb-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.66rem;
+  color: rgba(244, 240, 227, 0.7);
+  margin-bottom: 0.1rem;
+}
+
+.cb-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cb-name {
+  font-weight: 700;
+  color: rgba(244, 240, 227, 0.92);
+  letter-spacing: 0.3px;
+  text-transform: capitalize;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 9rem;
+}
+
+.cb-rating {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem;
+  color: rgba(244, 240, 227, 0.5);
+  background: rgba(255,255,255,0.06);
+  padding: 0 0.25rem;
+  border-radius: 4px;
+}
+
+.cb-body {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: #f4f0e3;
+  font-weight: 600;
+}
+
+.cb-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cb-eval {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--bubble-color, #a8d97a);
+  font-weight: 700;
+  background: rgba(0,0,0,0.35);
+  padding: 0.05rem 0.35rem;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.chat-pop-enter-active, .chat-pop-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.chat-pop-enter-from, .chat-pop-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-4px);
+}
+
 .analysis-container {
   grid-area: analysis;
   display: flex;
@@ -3179,8 +3238,7 @@ button,
   padding-bottom: 1rem;
   background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
   box-sizing: border-box;
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.08);
   margin: 0 auto;
   overflow-y: auto;
@@ -3200,9 +3258,7 @@ button,
 }
 
 @media (min-width: 1200px) {
-  .analyze {
-    max-width: 20rem;
-  }
+  .analyze { max-width: 20rem; }
 }
 
 .analyzis-header {
@@ -3250,15 +3306,8 @@ button,
 }
 
 @keyframes thinkingPulse {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: scale(0.85);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.15);
-  }
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 .control-icon-btn {
@@ -3277,29 +3326,12 @@ button,
   flex-shrink: 0;
 }
 
-.control-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: #f4f0e3;
-}
+.control-icon-btn:hover { background: rgba(255, 255, 255, 0.09); color: #f4f0e3; }
+.control-icon-btn svg { display: block; }
 
-.control-icon-btn svg {
-  display: block;
-}
-
-.desktop-settings {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.desktop-settings:hover {
-  transform: translateY(-50%);
-}
-
-.mobile-settings {
-  display: none;
-}
+.desktop-settings { position: absolute; left: 0; top: 50%; transform: translateY(-50%); }
+.desktop-settings:hover { transform: translateY(-50%); }
+.mobile-settings { display: none; }
 
 .engine-controls {
   margin-left: 0;
@@ -3339,20 +3371,12 @@ button,
   padding: 0 0.45rem;
 }
 
-.pv-switcher button:hover {
-  color: #f5f5dc;
-  background: rgba(255, 255, 255, 0.06);
-}
+.pv-switcher button:hover { color: #f5f5dc; background: rgba(255, 255, 255, 0.06); }
 
 .pv-switcher button.active {
-  background: linear-gradient(
-    145deg,
-    rgba(168, 217, 122, 0.24),
-    rgba(106, 209, 63, 0.18)
-  );
+  background: linear-gradient(145deg, rgba(168, 217, 122, 0.24), rgba(106, 209, 63, 0.18));
   color: #a8d97a;
-  box-shadow: 0 0 0 1px rgba(168, 217, 122, 0.28),
-    0 3px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 0 1px rgba(168, 217, 122, 0.28), 0 3px 8px rgba(0, 0, 0, 0.25);
 }
 
 .depth-chip {
@@ -3390,9 +3414,7 @@ button,
   user-select: none;
 }
 
-.engine-toggle input {
-  display: none;
-}
+.engine-toggle input { display: none; }
 
 .toggle-slider {
   width: 32px;
@@ -3467,12 +3489,7 @@ button,
   max-width: min(90vw, 22rem);
 }
 
-.loading-spinner {
-  position: relative;
-  width: 64px;
-  height: 64px;
-}
-
+.loading-spinner { position: relative; width: 64px; height: 64px; }
 .spinner-ring {
   position: absolute;
   inset: 0;
@@ -3481,25 +3498,15 @@ button,
   border-top-color: var(--text-highlight);
   animation: spinRing 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
 }
-
 .spinner-ring:nth-child(2) {
   inset: 8px;
   border-top-color: #a8d97a;
   animation-duration: 1.6s;
   animation-direction: reverse;
 }
+.spinner-ring:nth-child(3) { inset: 16px; border-top-color: #f4f0e3; animation-duration: 2s; }
 
-.spinner-ring:nth-child(3) {
-  inset: 16px;
-  border-top-color: #f4f0e3;
-  animation-duration: 2s;
-}
-
-@keyframes spinRing {
-  to {
-    transform: rotate(360deg);
-  }
-}
+@keyframes spinRing { to { transform: rotate(360deg); } }
 
 .loading-title {
   font-family: serif;
@@ -3566,15 +3573,223 @@ button,
   cursor: pointer;
 }
 
-.loading-fade-enter-active,
-.loading-fade-leave-active {
-  transition: opacity 0.35s ease;
+.loading-fade-enter-active, .loading-fade-leave-active { transition: opacity 0.35s ease; }
+.loading-fade-enter-from, .loading-fade-leave-to { opacity: 0; }
+
+/* ✦ NEW: Completion modal styles */
+.completion-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 8, 5, 0.55);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  padding: 1rem;
 }
 
-.loading-fade-enter-from,
-.loading-fade-leave-to {
-  opacity: 0;
+.completion-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 2.2rem 1.8rem 1.6rem;
+  width: min(94vw, 24rem);
+  background: linear-gradient(160deg, var(--panel-1, #262421), var(--panel-2, #1e1c18) 70%, #16130f);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 22px;
+  box-shadow: 0 25px 60px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.08);
+  overflow: hidden;
+  animation: completionPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
+
+@keyframes completionPop {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.completion-glow {
+  position: absolute;
+  top: -60%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle at 50% 35%, rgba(106, 209, 63, 0.18), transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.completion-card > * { position: relative; z-index: 1; }
+
+.completion-check {
+  margin-bottom: 0.3rem;
+}
+
+.check-path {
+  stroke-dasharray: 50;
+  stroke-dashoffset: 50;
+  animation: checkDraw 0.5s 0.2s ease forwards;
+}
+
+@keyframes checkDraw {
+  to { stroke-dashoffset: 0; }
+}
+
+.completion-title {
+  font-family: serif;
+  color: #f5f5dc;
+  font-size: 1.45rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: 0.5px;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+.completion-subtitle {
+  font-size: 0.82rem;
+  color: rgba(244, 240, 227, 0.65);
+  margin: 0 0 0.3rem;
+  text-align: center;
+}
+
+.completion-stats {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0.4rem 0 0.3rem;
+}
+
+.completion-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.55rem 0.4rem;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+}
+
+.cs-name {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: rgba(244, 240, 227, 0.8);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.cs-acc {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.cs-rating {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  color: rgba(244, 240, 227, 0.45);
+}
+
+.completion-divider {
+  display: flex;
+  align-items: center;
+  font-family: serif;
+  font-style: italic;
+  color: rgba(244, 240, 227, 0.4);
+  font-size: 0.8rem;
+}
+
+.completion-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.ch-chip {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid;
+}
+
+.ch-chip.brilliant {
+  color: #03aea7;
+  border-color: rgba(3, 174, 167, 0.4);
+  background: rgba(3, 174, 167, 0.12);
+}
+.ch-chip.mistake {
+  color: #f38800;
+  border-color: rgba(243, 136, 0, 0.4);
+  background: rgba(243, 136, 0, 0.12);
+}
+.ch-chip.blunder {
+  color: #ff6b6b;
+  border-color: rgba(255, 60, 60, 0.4);
+  background: rgba(255, 60, 60, 0.12);
+}
+
+.completion-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.8rem;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #6ad13f, #4c8a2a);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.22s ease;
+  box-shadow: 0 8px 20px rgba(106, 209, 63, 0.35), inset 0 1px 0 rgba(255,255,255,0.2);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  margin-top: 0.4rem;
+}
+
+.completion-cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px rgba(106, 209, 63, 0.45), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+
+.completion-cta:active { transform: translateY(0); }
+
+.completion-skip {
+  background: none;
+  border: none;
+  color: rgba(244, 240, 227, 0.55);
+  font-size: 0.78rem;
+  padding: 0.35rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.completion-skip:hover { color: rgba(244, 240, 227, 0.8); }
+
+.completion-hint {
+  font-size: 0.66rem;
+  color: rgba(244, 240, 227, 0.35);
+  margin: 0.1rem 0 0;
+  font-style: italic;
+}
+
+.completion-fade-enter-active, .completion-fade-leave-active {
+  transition: opacity 0.35s ease;
+}
+.completion-fade-enter-from, .completion-fade-leave-to { opacity: 0; }
 
 /* ===== MOVES PANEL ======================================================= */
 .moves {
@@ -3583,8 +3798,7 @@ button,
   border-radius: 16px;
   width: 100%;
   max-width: 500px;
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -3598,12 +3812,9 @@ button,
 }
 
 @media (min-width: 1200px) {
-  .moves {
-    max-width: 20rem;
-  }
+  .moves { max-width: 20rem; }
 }
 
-/* ===== STICKY TAB SWITCHER =============================================== */
 .tabs-toggle {
   position: sticky;
   top: 0;
@@ -3646,11 +3857,9 @@ button,
 .tabs-toggle button.active {
   background: rgba(0, 0, 0, 0.28);
   color: #f4f0e3;
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-/* ===== ✦ CHANGED: MOVES LIST — card-style cells with borders ============= */
 .moveslist {
   margin: 8px auto 0;
   padding: 8px;
@@ -3690,12 +3899,10 @@ button,
   cursor: pointer;
   color: #e9e5d6;
   font-weight: 500;
-  transition: background 0.13s ease, border-color 0.13s ease,
-    color 0.13s ease, box-shadow 0.13s ease, transform 0.1s ease;
+  transition: background 0.13s ease, border-color 0.13s ease, color 0.13s ease, box-shadow 0.13s ease, transform 0.1s ease;
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  /* ✦ NEW: subtle card look */
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
@@ -3716,19 +3923,12 @@ button,
   border-color: rgba(255, 255, 255, 0.18);
 }
 
-.move-cell:active {
-  transform: scale(0.97);
-}
+.move-cell:active { transform: scale(0.97); }
 
 .move-cell.active {
-  background: linear-gradient(
-    145deg,
-    rgba(103, 122, 228, 0.4),
-    rgba(103, 122, 228, 0.22)
-  );
+  background: linear-gradient(145deg, rgba(103, 122, 228, 0.4), rgba(103, 122, 228, 0.22));
   border-color: rgba(150, 166, 255, 0.55);
-  box-shadow: 0 0 0 1px rgba(150, 166, 255, 0.15),
-    0 2px 10px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 1px rgba(150, 166, 255, 0.15), 0 2px 10px rgba(0, 0, 0, 0.3);
   color: #fff;
 }
 
@@ -3740,11 +3940,7 @@ button,
 }
 
 .move-cell.variant.active {
-  background: linear-gradient(
-    145deg,
-    rgba(103, 122, 228, 0.32),
-    rgba(103, 122, 228, 0.18)
-  );
+  background: linear-gradient(145deg, rgba(103, 122, 228, 0.32), rgba(103, 122, 228, 0.18));
 }
 
 .move-cell.empty {
@@ -3811,10 +4007,7 @@ button,
   gap: 0.75rem;
 }
 
-.boardtools-left {
-  grid-column: 1;
-  justify-self: start;
-}
+.boardtools-left { grid-column: 1; justify-self: start; }
 
 .share-menu-wrap {
   grid-column: 3;
@@ -3869,19 +4062,10 @@ button,
   cursor: pointer;
 }
 
-.share-menu button:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
+.share-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+.share-menu button + button { border-top: 1px solid rgba(255, 255, 255, 0.08); }
 
-.share-menu button + button {
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.reverse,
-.undo,
-.redo,
-.jumpstart,
-.jumpend {
+.reverse, .undo, .redo, .jumpstart, .jumpend {
   background-color: var(--btn-idle);
   width: clamp(35px, 8vw, 40px);
   height: clamp(35px, 8vw, 40px);
@@ -3897,24 +4081,15 @@ button,
   justify-content: center;
 }
 
-.reverse svg {
-  display: block;
-}
+.reverse svg { display: block; }
 
-.reverse:disabled,
-.undo:disabled,
-.redo:disabled,
-.jumpstart:disabled,
-.jumpend:disabled {
+.reverse:disabled, .undo:disabled, .redo:disabled, .jumpstart:disabled, .jumpend:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.reverse:hover:not(:disabled),
-.undo:hover:not(:disabled),
-.redo:hover:not(:disabled),
-.jumpstart:hover:not(:disabled),
-.jumpend:hover:not(:disabled) {
+.reverse:hover:not(:disabled), .undo:hover:not(:disabled), .redo:hover:not(:disabled),
+.jumpstart:hover:not(:disabled), .jumpend:hover:not(:disabled) {
   background: linear-gradient(145deg, var(--panel-1), var(--panel-2));
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
@@ -3958,12 +4133,9 @@ button,
   text-decoration: underline;
 }
 
-.move-data {
-  padding: 0 1rem;
-}
+.move-data { padding: 0 1rem; }
 
-.line,
-.secondline {
+.line, .secondline {
   font-family: "JetBrains Mono", monospace;
   display: flex;
   white-space: nowrap;
@@ -3984,26 +4156,12 @@ button,
   scrollbar-color: rgba(255, 255, 255, 0.2) rgba(0, 0, 0, 0.15);
 }
 
-.pretty-scroll::-webkit-scrollbar {
-  height: 5px;
-}
+.pretty-scroll::-webkit-scrollbar { height: 5px; }
+.pretty-scroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.15); border-radius: 10px; }
+.pretty-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 10px; }
+.pretty-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.35); }
 
-.pretty-scroll::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 10px;
-}
-
-.pretty-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 10px;
-}
-
-.pretty-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
-}
-
-.evalnum2,
-.evalnum3 {
+.evalnum2, .evalnum3 {
   font-size: 0.9rem;
   color: #171717;
   background-color: #606847;
@@ -4032,9 +4190,7 @@ button,
   border-radius: 4px;
 }
 
-.line-move:hover {
-  background: rgba(103, 122, 228, 0.3);
-}
+.line-move:hover { background: rgba(103, 122, 228, 0.3); }
 
 .toast {
   position: fixed;
@@ -4049,13 +4205,10 @@ button,
   z-index: 1000;
 }
 
-.toast-fade-enter-active,
-.toast-fade-leave-active {
+.toast-fade-enter-active, .toast-fade-leave-active {
   transition: opacity 0.25s ease, transform 0.25s ease;
 }
-
-.toast-fade-enter-from,
-.toast-fade-leave-to {
+.toast-fade-enter-from, .toast-fade-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(8px);
 }
@@ -4083,13 +4236,8 @@ button,
   cursor: pointer;
 }
 
-.context-menu-item.delete {
-  color: #ff6b6b;
-}
-
-.context-menu-item.delete:hover {
-  background: rgba(255, 60, 60, 0.2);
-}
+.context-menu-item.delete { color: #ff6b6b; }
+.context-menu-item.delete:hover { background: rgba(255, 60, 60, 0.2); }
 
 /* ===== REPORT =========================================================== */
 .report {
@@ -4138,13 +4286,8 @@ button,
   flex-shrink: 0;
 }
 
-.white-swatch {
-  background: #f4f0e3;
-}
-
-.black-swatch {
-  background: #1a1a1a;
-}
+.white-swatch { background: #f4f0e3; }
+.black-swatch { background: #1a1a1a; }
 
 .accuracy-score {
   font-family: "JetBrains Mono", monospace;
@@ -4155,15 +4298,8 @@ button,
   margin: 0.1rem 0 0.1rem;
 }
 
-.accuracy-score.empty {
-  color: rgba(245, 245, 220, 0.4);
-  font-size: 1.2rem;
-}
-
-.accuracy-percent {
-  font-size: 0.6em;
-  opacity: 0.75;
-}
+.accuracy-score.empty { color: rgba(245, 245, 220, 0.4); font-size: 1.2rem; }
+.accuracy-percent { font-size: 0.6em; opacity: 0.75; }
 
 .est-rating {
   display: flex;
@@ -4190,9 +4326,7 @@ button,
   color: #a8d97a;
 }
 
-.est-rating.empty .est-rating-value {
-  color: rgba(245, 245, 220, 0.4);
-}
+.est-rating.empty .est-rating-value { color: rgba(245, 245, 220, 0.4); }
 
 .report-row {
   display: flex;
@@ -4204,27 +4338,11 @@ button,
   min-width: 0;
 }
 
-.report-row:hover {
-  background: rgba(0, 0, 0, 0.12);
-}
-
-.report-row.dim {
-  opacity: 0.35;
-}
-
-.report-row.clickable {
-  cursor: pointer;
-}
-
-.report-row.clickable:hover {
-  background: rgba(103, 122, 228, 0.18);
-}
-
-.report-row-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
+.report-row:hover { background: rgba(0, 0, 0, 0.12); }
+.report-row.dim { opacity: 0.35; }
+.report-row.clickable { cursor: pointer; }
+.report-row.clickable:hover { background: rgba(103, 122, 228, 0.18); }
+.report-row-icon { width: 16px; height: 16px; flex-shrink: 0; }
 
 .report-row-label {
   flex: 1;
@@ -4248,7 +4366,6 @@ button,
   flex-shrink: 0;
 }
 
-/* ===== REPORT HEADER / MAXIMIZE ========================================= */
 .report-header {
   display: flex;
   align-items: center;
@@ -4280,10 +4397,7 @@ button,
   flex-shrink: 0;
 }
 
-.report-expand-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f4f0e3;
-}
+.report-expand-btn:hover { background: rgba(255, 255, 255, 0.1); color: #f4f0e3; }
 
 .report.maximized {
   position: fixed;
@@ -4296,12 +4410,7 @@ button,
   border: none;
   margin: 0;
   padding: 1.25rem clamp(1rem, 4vw, 3rem) 2.5rem;
-  background: linear-gradient(
-    160deg,
-    var(--panel-1, #262421),
-    var(--panel-2, #1e1c18) 60%,
-    #171512
-  );
+  background: linear-gradient(160deg, var(--panel-1, #262421), var(--panel-2, #1e1c18) 60%, #171512);
   box-shadow: none;
   display: flex;
   flex-direction: column;
@@ -4310,14 +4419,8 @@ button,
 }
 
 @keyframes reportZoom {
-  from {
-    opacity: 0;
-    transform: scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+  from { opacity: 0; transform: scale(0.985); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 .report.maximized .report-header {
@@ -4328,9 +4431,7 @@ button,
   padding: 0.35rem 0 0.5rem;
 }
 
-.report.maximized .report-title {
-  font-size: 1.15rem;
-}
+.report.maximized .report-title { font-size: 1.15rem; }
 
 .report.maximized .report-columns {
   max-width: 760px;
@@ -4338,15 +4439,8 @@ button,
   margin: 0 auto;
 }
 
-.report.maximized .eval-graph-card {
-  max-width: 960px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.report.maximized .eval-graph-area {
-  height: 220px;
-}
+.report.maximized .eval-graph-card { max-width: 960px; width: 100%; margin: 0 auto; }
+.report.maximized .eval-graph-area { height: 220px; }
 
 .report-max-grid {
   display: grid;
@@ -4368,10 +4462,6 @@ button,
   min-width: 0;
 }
 
-.report-card-wide {
-  grid-column: 1 / -1;
-}
-
 .report-card-title {
   font-family: serif;
   color: #f5f5dc;
@@ -4388,12 +4478,7 @@ button,
   font-style: italic;
 }
 
-/* ===== EVAL GRAPH (area style + clean hover crosshair) =================== */
-.eval-graph-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
+.eval-graph-card { display: flex; flex-direction: column; gap: 0.45rem; }
 
 .eval-graph-head {
   display: flex;
@@ -4429,25 +4514,13 @@ button,
 }
 
 .eval-graph-area:hover {
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(168, 217, 122, 0.3);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(168, 217, 122, 0.3);
 }
 
-.eval-graph-svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
+.eval-graph-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
-.eg-black {
-  fill: #3a3833;
-}
-
-.eg-white {
-  fill: #f0ede6;
-}
+.eg-black { fill: #3a3833; }
+.eg-white { fill: #f0ede6; }
 
 .eg-center {
   stroke: rgba(120, 118, 110, 0.55);
@@ -4511,25 +4584,10 @@ button,
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
-.eg-tooltip.below {
-  top: auto;
-  bottom: 6px;
-}
-
-.eg-tooltip-move {
-  color: rgba(244, 240, 227, 0.75);
-}
-
-.eg-tooltip-eval {
-  font-weight: 700;
-}
-
-.eg-tooltip-acc {
-  font-size: 0.6rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
+.eg-tooltip.below { top: auto; bottom: 6px; }
+.eg-tooltip-move { color: rgba(244, 240, 227, 0.75); }
+.eg-tooltip-eval { font-weight: 700; }
+.eg-tooltip-acc { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 
 .eg-dot {
   position: absolute;
@@ -4543,67 +4601,20 @@ button,
   transition: box-shadow 0.15s ease;
 }
 
-.eg-dot:hover {
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
-  z-index: 3;
-}
+.eg-dot:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); z-index: 3; }
+.eg-dot.current { box-shadow: 0 0 0 2px #fff, 0 0 8px rgba(255, 255, 255, 0.8); z-index: 5; }
 
-.eg-dot.current {
-  box-shadow: 0 0 0 2px #fff, 0 0 8px rgba(255, 255, 255, 0.8);
-  z-index: 5;
-}
+.eg-dot.brilliant, .eg-hover-dot.brilliant { background: #03aea7; }
+.eg-dot.great, .eg-hover-dot.great { background: #4c8cb5; }
+.eg-dot.best, .eg-hover-dot.best { background: #6ad13f; }
+.eg-dot.excellent, .eg-hover-dot.excellent { background: #90bc36; }
+.eg-dot.good, .eg-hover-dot.good { background: #8eae83; }
+.eg-dot.book, .eg-hover-dot.book { background: #ad8760; }
+.eg-dot.inaccuracy, .eg-hover-dot.inaccuracy { background: #f2bc43; }
+.eg-dot.mistake, .eg-hover-dot.mistake { background: #f38800; }
+.eg-dot.blunder, .eg-hover-dot.blunder { background: #ff0000; }
 
-.eg-dot.brilliant,
-.eg-hover-dot.brilliant {
-  background: #03aea7;
-}
-
-.eg-dot.great,
-.eg-hover-dot.great {
-  background: #4c8cb5;
-}
-
-.eg-dot.best,
-.eg-hover-dot.best {
-  background: #6ad13f;
-}
-
-.eg-dot.excellent,
-.eg-hover-dot.excellent {
-  background: #90bc36;
-}
-
-.eg-dot.good,
-.eg-hover-dot.good {
-  background: #8eae83;
-}
-
-.eg-dot.book,
-.eg-hover-dot.book {
-  background: #ad8760;
-}
-
-.eg-dot.inaccuracy,
-.eg-hover-dot.inaccuracy {
-  background: #f2bc43;
-}
-
-.eg-dot.mistake,
-.eg-hover-dot.mistake {
-  background: #f38800;
-}
-
-.eg-dot.blunder,
-.eg-hover-dot.blunder {
-  background: #ff0000;
-}
-
-/* ===== MAXIMIZED CARDS =================================================== */
-.report-bar-block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
+.report-bar-block { display: flex; flex-direction: column; gap: 0.3rem; }
 
 .report-bar-label {
   display: flex;
@@ -4631,15 +4642,9 @@ button,
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
-.report-bar-seg {
-  height: 100%;
-}
+.report-bar-seg { height: 100%; }
 
-.phase-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
+.phase-rows { display: flex; flex-direction: column; gap: 0.7rem; }
 
 .phase-row {
   display: grid;
@@ -4656,12 +4661,7 @@ button,
   color: rgba(244, 240, 227, 0.75);
 }
 
-.phase-row-vals {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-  align-items: center;
-}
+.phase-row-vals { display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center; }
 
 .phase-val-chip {
   font-family: "JetBrains Mono", monospace;
@@ -4684,41 +4684,15 @@ button,
   flex-shrink: 0;
 }
 
-.color-indicator.white {
-  background: #f4f0e3;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
-}
+.color-indicator.white { background: #f4f0e3; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3); }
+.color-indicator.black { background: #1a1a1a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3); }
 
-.color-indicator.black {
-  background: #1a1a1a;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
-}
+.phase-row-bars { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 3px; }
 
-.phase-row-bars {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
+.phase-mini-bar { height: 6px; background: rgba(0, 0, 0, 0.35); border-radius: 4px; overflow: hidden; }
+.phase-mini-bar div { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
 
-.phase-mini-bar {
-  height: 6px;
-  background: rgba(0, 0, 0, 0.35);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.phase-mini-bar div {
-  height: 100%;
-  border-radius: 4px;
-  transition: width 0.4s ease;
-}
-
-.bucket-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
+.bucket-rows { display: flex; flex-direction: column; gap: 0.35rem; }
 
 .bucket-row {
   display: grid;
@@ -4730,40 +4704,14 @@ button,
   padding: 0.3rem 0.5rem;
 }
 
-.bucket-row-label {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.72rem;
-  color: rgba(244, 240, 227, 0.6);
-  font-weight: 700;
-}
+.bucket-row-label { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: rgba(244, 240, 227, 0.6); font-weight: 700; }
+.bucket-row-val { font-family: "JetBrains Mono", monospace; font-size: 0.8rem; font-weight: 700; text-align: center; }
+.bucket-legend { display: flex; align-items: center; gap: 0.35rem; font-size: 0.7rem; color: rgba(244, 240, 227, 0.6); }
+.bucket-legend .side-swatch { margin-left: 0.4rem; }
 
-.bucket-row-val {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-align: center;
-}
+.gstats-table { display: flex; flex-direction: column; gap: 0.3rem; }
 
-.bucket-legend {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.7rem;
-  color: rgba(244, 240, 227, 0.6);
-}
-
-.bucket-legend .side-swatch {
-  margin-left: 0.4rem;
-}
-
-.gstats-table {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.gstats-head,
-.gstats-row {
+.gstats-head, .gstats-row {
   display: grid;
   grid-template-columns: 1fr 3.5rem 3.5rem;
   gap: 0.5rem;
@@ -4778,8 +4726,7 @@ button,
   font-weight: 700;
 }
 
-.gstats-head span:not(:first-child),
-.gstats-row span:not(:first-child) {
+.gstats-head span:not(:first-child), .gstats-row span:not(:first-child) {
   text-align: right;
   font-family: "JetBrains Mono", monospace;
 }
@@ -4792,13 +4739,8 @@ button,
   padding: 0.32rem 0.5rem;
 }
 
-.gstats-row span:first-child {
-  color: rgba(244, 240, 227, 0.7);
-}
-
-.gstats-row.piece-row {
-  grid-template-columns: 1fr 4.6rem 4.6rem;
-}
+.gstats-row span:first-child { color: rgba(244, 240, 227, 0.7); }
+.gstats-row.piece-row { grid-template-columns: 1fr 4.6rem 4.6rem; }
 
 .piece-cell {
   display: flex;
@@ -4810,23 +4752,10 @@ button,
   text-overflow: ellipsis;
 }
 
-.piece-sym {
-  font-size: 1rem;
-  line-height: 1;
-  flex-shrink: 0;
-}
+.piece-sym { font-size: 1rem; line-height: 1; flex-shrink: 0; }
+.piece-counts { font-family: "JetBrains Mono", monospace; font-size: 0.62rem; color: rgba(244, 240, 227, 0.45); }
 
-.piece-counts {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.62rem;
-  color: rgba(244, 240, 227, 0.45);
-}
-
-.moments-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
+.moments-list { display: flex; flex-direction: column; gap: 0.35rem; }
 
 .moment-row {
   display: flex;
@@ -4842,26 +4771,11 @@ button,
   width: 100%;
 }
 
-.moment-row:hover {
-  background: rgba(103, 122, 228, 0.18);
-  border-color: rgba(220, 228, 255, 0.35);
-}
+.moment-row:hover { background: rgba(103, 122, 228, 0.18); border-color: rgba(220, 228, 255, 0.35); }
 
-.moment-side {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.moment-side.white {
-  background: #f4f0e3;
-}
-
-.moment-side.black {
-  background: #1a1a1a;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
-}
+.moment-side { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.moment-side.white { background: #f4f0e3; }
+.moment-side.black { background: #1a1a1a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35); }
 
 .moment-san {
   font-weight: 700;
@@ -4873,11 +4787,7 @@ button,
   white-space: nowrap;
 }
 
-.moment-icon {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-}
+.moment-icon { width: 18px; height: 18px; flex-shrink: 0; }
 
 .moment-swing {
   font-family: "JetBrains Mono", monospace;
@@ -4886,7 +4796,6 @@ button,
   flex-shrink: 0;
 }
 
-/* ===== NOTE EDITOR ====================================================== */
 .note-overlay {
   position: fixed;
   inset: 0;
@@ -4899,11 +4808,7 @@ button,
 }
 
 .note-editor {
-  background: linear-gradient(
-    145deg,
-    var(--panel-1, #262421),
-    var(--panel-2, #1e1c18)
-  );
+  background: linear-gradient(145deg, var(--panel-1, #262421), var(--panel-2, #1e1c18));
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   padding: 1.2rem 1.4rem;
@@ -4947,20 +4852,10 @@ button,
   transition: border-color 0.2s ease;
 }
 
-.note-textarea:focus {
-  border-color: rgba(168, 217, 122, 0.5);
-}
+.note-textarea:focus { border-color: rgba(168, 217, 122, 0.5); }
+.note-textarea::placeholder { color: rgba(244, 240, 227, 0.35); }
 
-.note-textarea::placeholder {
-  color: rgba(244, 240, 227, 0.35);
-}
-
-.note-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 0.8rem;
-}
+.note-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.8rem; }
 
 .note-btn {
   padding: 0.45rem 1rem;
@@ -4972,34 +4867,19 @@ button,
   transition: all 0.2s ease;
 }
 
-.note-btn.cancel {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(244, 240, 227, 0.7);
-}
-
-.note-btn.cancel:hover {
-  background: rgba(255, 255, 255, 0.14);
-}
+.note-btn.cancel { background: rgba(255, 255, 255, 0.08); color: rgba(244, 240, 227, 0.7); }
+.note-btn.cancel:hover { background: rgba(255, 255, 255, 0.14); }
 
 .note-btn.save {
-  background: linear-gradient(
-    145deg,
-    rgba(168, 217, 122, 0.3),
-    rgba(106, 209, 63, 0.2)
-  );
+  background: linear-gradient(145deg, rgba(168, 217, 122, 0.3), rgba(106, 209, 63, 0.2));
   color: #a8d97a;
   border: 1px solid rgba(168, 217, 122, 0.3);
 }
 
 .note-btn.save:hover {
-  background: linear-gradient(
-    145deg,
-    rgba(168, 217, 122, 0.4),
-    rgba(106, 209, 63, 0.3)
-  );
+  background: linear-gradient(145deg, rgba(168, 217, 122, 0.4), rgba(106, 209, 63, 0.3));
 }
 
-/* ===== SHORTCUTS PANEL =================================================== */
 .shortcuts-overlay {
   position: fixed;
   inset: 0;
@@ -5012,11 +4892,7 @@ button,
 }
 
 .shortcuts-panel {
-  background: linear-gradient(
-    145deg,
-    var(--panel-1, #262421),
-    var(--panel-2, #1e1c18)
-  );
+  background: linear-gradient(145deg, var(--panel-1, #262421), var(--panel-2, #1e1c18));
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
   padding: 1.3rem 1.5rem;
@@ -5024,20 +4900,8 @@ button,
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
 }
 
-.shortcuts-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-}
-
-.shortcuts-header h3 {
-  font-family: serif;
-  color: #f5f5dc;
-  font-size: 1.05rem;
-  font-weight: 700;
-  margin: 0;
-}
+.shortcuts-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.shortcuts-header h3 { font-family: serif; color: #f5f5dc; font-size: 1.05rem; font-weight: 700; margin: 0; }
 
 .shortcuts-close {
   background: none;
@@ -5049,21 +4913,9 @@ button,
   line-height: 1;
 }
 
-.shortcuts-close:hover {
-  color: #f4f0e3;
-}
-
-.shortcuts-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-}
-
-.shortcut-row {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-}
+.shortcuts-close:hover { color: #f4f0e3; }
+.shortcuts-list { display: flex; flex-direction: column; gap: 0.55rem; }
+.shortcut-row { display: flex; align-items: center; gap: 0.8rem; }
 
 .shortcut-row kbd {
   font-family: "JetBrains Mono", monospace;
@@ -5079,12 +4931,8 @@ button,
   white-space: nowrap;
 }
 
-.shortcut-row span {
-  color: rgba(244, 240, 227, 0.8);
-  font-size: 0.85rem;
-}
+.shortcut-row span { color: rgba(244, 240, 227, 0.8); font-size: 0.85rem; }
 
-/* ===== EXPLORER ========================================================== */
 .explorer {
   padding: 0.6rem 0.5rem 0.6rem;
   box-sizing: border-box;
@@ -5102,9 +4950,7 @@ button,
   gap: 0.5rem;
 }
 
-.explorer-status.error {
-  color: #ffb0a8;
-}
+.explorer-status.error { color: #ffb0a8; }
 
 .mini-spinner {
   width: 16px;
@@ -5145,11 +4991,7 @@ button,
   word-break: break-word;
 }
 
-.explorer-table {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
+.explorer-table { display: flex; flex-direction: column; gap: 0.25rem; }
 
 .explorer-row {
   display: grid;
@@ -5196,29 +5038,11 @@ button,
   white-space: nowrap;
 }
 
-.col-games {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.1;
-  align-items: flex-start;
-}
+.col-games { display: flex; flex-direction: column; line-height: 1.1; align-items: flex-start; }
 
-.games-percent {
-  font-family: "JetBrains Mono", monospace;
-  font-weight: 700;
-  font-size: 0.8rem;
-  color: #f4f0e3;
-}
-
-.games-count {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.62rem;
-  color: rgba(244, 240, 227, 0.45);
-}
-
-.col-split {
-  min-width: 0;
-}
+.games-percent { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 0.8rem; color: #f4f0e3; }
+.games-count { font-family: "JetBrains Mono", monospace; font-size: 0.62rem; color: rgba(244, 240, 227, 0.45); }
+.col-split { min-width: 0; }
 
 .split-bar {
   display: flex;
@@ -5229,9 +5053,7 @@ button,
   box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
-.split-white,
-.split-draw,
-.split-black {
+.split-white, .split-draw, .split-black {
   height: 100%;
   transition: width 0.3s ease;
   display: flex;
@@ -5244,20 +5066,9 @@ button,
   white-space: nowrap;
 }
 
-.split-white {
-  background: #e8e4d8;
-  color: #333;
-}
-
-.split-draw {
-  background: #8a8a86;
-  color: #f4f0e3;
-}
-
-.split-black {
-  background: #2b2b2b;
-  color: #f4f0e3;
-}
+.split-white { background: #e8e4d8; color: #333; }
+.split-draw { background: #8a8a86; color: #f4f0e3; }
+.split-black { background: #2b2b2b; color: #f4f0e3; }
 
 .explorer-db-toggle {
   display: flex;
@@ -5289,29 +5100,19 @@ button,
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-/* ===== MOBILE ============================================================ */
+/* ===== ✦ CHANGED: MOBILE STICKY + MINIMAL SCROLL ======================= */
 @media (max-width: 767px) {
-  .acc-badge {
-    width: 19px;
-    height: 19px;
-  }
-
-  .board-acc-icon {
-    width: 5.2%;
-    height: 5.2%;
-  }
-
-  .report-row-icon {
-    width: 18px;
-    height: 18px;
-  }
+  .acc-badge { width: 19px; height: 19px; }
+  .board-acc-icon { width: 5.2%; height: 5.2%; }
+  .report-row-icon { width: 18px; height: 18px; }
 
   .grid-layout {
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
-    padding: 0.25rem;
-    gap: 0.3rem;
+    padding: 0;
+    gap: 0;
+    padding-top: 0;
   }
 
   .board-area,
@@ -5320,15 +5121,20 @@ button,
     display: contents;
   }
 
-  /* ✦ CHANGED ORDER: board on top (no more buried board), moves right
-     below it for the thumb, analysis last, toolbar sticky at bottom */
+  /* ✦ NEW: sticky title slot at top */
   .title-slot {
     order: 0;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: linear-gradient(180deg, var(--panel-1, #262421), rgba(38, 36, 33, 0.96) 80%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 0.35rem 0.6rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   }
 
-  .player-bar {
-    order: 1;
-  }
+  .player-bar { order: 1; padding: 0.22rem 0.55rem; margin: 0; font-size: 0.78rem; }
 
   .board-row {
     order: 1;
@@ -5336,22 +5142,13 @@ button,
     gap: 0.3rem;
   }
 
-  .moves {
-    order: 2;
-  }
+  .moves { order: 2; }
 
-  .analyze {
-    order: 0;
-  }
+  .analyze { order: 0; }
 
-  .boardtools {
-    order: 4;
-  }
+  .boardtools { order: 4; }
 
-  /* Board stays FULL WIDTH — nothing shrinks */
-  .board-wrapper {
-    max-width: 100%;
-  }
+  .board-wrapper { max-width: 100%; }
 
   .evalbar {
     order: -1;
@@ -5360,28 +5157,12 @@ button,
     flex-shrink: 0;
   }
 
-  .evalbar-inner {
-    flex-direction: row-reverse;
-    border-radius: 8px;
-  }
+  .evalbar-inner { flex-direction: row-reverse; border-radius: 8px; }
+  .evalbar.flipped .evalbar-inner { flex-direction: row-reverse; }
 
-  .evalbar.flipped .evalbar-inner {
-    flex-direction: row-reverse;
-  }
-
-  .blackeval,
-  .whiteeval {
-    height: 100%;
-    width: auto;
-  }
-
-  .blackeval {
-    width: var(--eval, 50%);
-  }
-
-  .whiteeval {
-    width: calc(100% - var(--eval, 50%));
-  }
+  .blackeval, .whiteeval { height: 100%; width: auto; }
+  .blackeval { width: var(--eval, 50%); }
+  .whiteeval { width: calc(100% - var(--eval, 50%)); }
 
   .evalnum {
     top: 50%;
@@ -5392,23 +5173,10 @@ button,
     padding: 0.08rem 0.45rem;
   }
 
-  .player-bar {
-    padding: 0.22rem 0.55rem;
-    margin: 0;
-    font-size: 0.78rem;
-  }
-
-  .captured-pieces {
-    padding-left: 0.3rem;
-  }
-
-  .captured-piece {
-    font-size: 0.72rem;
-  }
-
-  .material-badge {
-    font-size: 0.55rem;
-  }
+  .player-bar { padding: 0.22rem 0.55rem; margin: 0; font-size: 0.78rem; }
+  .captured-pieces { padding-left: 0.3rem; }
+  .captured-piece { font-size: 0.72rem; }
+  .material-badge { font-size: 0.55rem; }
 
   .analyze {
     background: none;
@@ -5419,36 +5187,28 @@ button,
     max-width: none;
     min-height: 0;
     max-height: none;
-    /* ✦ NEW: let swipes chain out into the page scroll */
     overscroll-behavior: auto;
   }
 
-  .move-data {
-    padding: 0;
-  }
+  .move-data { padding: 0; }
 
   .analyzis-header {
     display: flex !important;
     flex-direction: column;
     justify-content: center;
-    padding: 0.5rem 0.35rem;
+    padding: 0.45rem 0.35rem;
     margin: 0;
     gap: 0.35rem;
   }
 
-  .analyzis-header .analyzis {
-    display: flex !important;
-    font-size: 0.92rem;
-    letter-spacing: 1.2px;
+  /* ✦ NEW: hide the "ANALYSIS" title text on mobile */
+  .analyzis {
+    display: none !important;
   }
 
-  .analysis-title-row {
-    min-height: 1.4rem;
-  }
+  .analysis-title-row { min-height: 0; display: none !important; }
 
-  .desktop-settings {
-    display: none;
-  }
+  .desktop-settings { display: none; }
 
   .mobile-settings {
     display: inline-flex;
@@ -5463,145 +5223,81 @@ button,
     justify-content: center;
   }
 
-  .pv-switcher,
-  .depth-chip {
-    height: 1.9rem;
-  }
+  .pv-switcher, .depth-chip { height: 1.9rem; }
+  .pv-switcher button { height: 100%; min-width: 1.8rem; font-size: 0.72rem; padding: 0 0.45rem; }
+  .depth-chip { padding: 0 0.6rem; font-size: 0.62rem; }
+  .depth-value { font-size: 0.76rem; }
+  .engine-toggle .toggle-label { font-size: 0.68rem; }
 
-  .pv-switcher button {
-    height: 100%;
-    min-width: 1.8rem;
-    font-size: 0.72rem;
-    padding: 0 0.45rem;
-  }
+  .accuracydescribtion, .bestmove { display: none; }
 
-  .depth-chip {
-    padding: 0 0.6rem;
-    font-size: 0.62rem;
-  }
-
-  .depth-value {
-    font-size: 0.76rem;
-  }
-
-  .engine-toggle .toggle-label {
-    font-size: 0.68rem;
-  }
-
-  .accuracydescribtion,
-  .bestmove {
-    display: none;
-  }
-
-  .line,
-  .secondline {
+  .line, .secondline {
     font-size: 0.74rem;
     padding: 0.32rem 0.45rem;
     margin: 3px 0;
     gap: 0.35rem;
   }
 
-  .evalnum2,
-  .evalnum3 {
+  .evalnum2, .evalnum3 {
     font-size: 0.78rem;
     min-width: 2.8rem;
     padding: 0 0.4rem;
   }
 
-  .line.analyzing {
-    animation: linePulse 1.2s ease-in-out infinite;
-  }
+  .line.analyzing { animation: linePulse 1.2s ease-in-out infinite; }
 
   @keyframes linePulse {
-    0%,
-    100% {
-      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
-    }
-    50% {
-      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4),
-        0 0 0 1px rgba(106, 209, 63, 0.55);
-    }
+    0%, 100% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4); }
+    50% { box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(106, 209, 63, 0.55); }
   }
 
-  /* ✦ CHANGED: shorter panel = less page to scroll, and swipes chain out */
+  /* ✦ NEW: shorter panel for minimal scrolling */
   .moves {
-    flex: 1 1 auto;
-    min-height: 180px;
-    max-height: 300px;
+    flex: 0 1 auto;
+    min-height: 140px;
+    max-height: 220px;
     height: auto;
     max-width: none;
     margin: 0;
     overscroll-behavior: auto;
   }
 
-  .tabs-toggle {
-    padding: 8px;
-  }
+  .tabs-toggle { padding: 7px; }
 
   .moveslist {
-    padding: 6px;
-    gap: 4px;
-    margin-top: 6px;
+    padding: 5px;
+    gap: 3px;
+    margin-top: 5px;
     overscroll-behavior: auto;
   }
 
   .move-cell {
-    min-height: 2.25rem;
-    padding: 0.35rem 0.6rem;
+    min-height: 2rem;
+    padding: 0.28rem 0.55rem;
+    font-size: 0.85rem;
   }
 
-  .report {
-    padding: 0.6rem;
-  }
+  .report { padding: 0.6rem; }
 
-  .report.maximized {
-    padding: 1rem 0.75rem 2rem;
-  }
+  .report.maximized { padding: 1rem 0.75rem 2rem; }
+  .report.maximized .eval-graph-area { height: 160px; }
 
-  .report.maximized .eval-graph-area {
-    height: 160px;
-  }
+  .eval-graph-area { height: 90px; }
 
-  .eval-graph-area {
-    height: 90px;
-  }
+  .eg-tooltip { font-size: 0.64rem; padding: 0.22rem 0.5rem; gap: 0.4rem; }
 
-  .eg-tooltip {
-    font-size: 0.64rem;
-    padding: 0.22rem 0.5rem;
-    gap: 0.4rem;
-  }
-
-  .report-col {
-    padding: 0.55rem 0.4rem;
-  }
-
-  .accuracy-score {
-    margin: 0.2rem 0 0.4rem;
-  }
-
-  .est-rating {
-    margin-bottom: 0.5rem;
-    padding-bottom: 0.4rem;
-  }
-
-  .report-row {
-    padding: 0.2rem 0.25rem;
-  }
+  .report-col { padding: 0.55rem 0.4rem; }
+  .accuracy-score { margin: 0.2rem 0 0.4rem; }
+  .est-rating { margin-bottom: 0.5rem; padding-bottom: 0.4rem; }
+  .report-row { padding: 0.2rem 0.25rem; }
 
   .explorer {
     padding: 0.4rem 0.5rem 0.6rem;
-    min-height: 280px;
+    min-height: 220px;
   }
 
-  .explorer-header {
-    padding: 0.25rem 0.3rem 0.5rem;
-    margin-bottom: 0.4rem;
-  }
-
-  .explorer-table {
-    gap: 0.25rem;
-  }
+  .explorer-header { padding: 0.25rem 0.3rem 0.5rem; margin-bottom: 0.4rem; }
+  .explorer-table { gap: 0.25rem; }
 
   .explorer-row {
     grid-template-columns: 2.3rem 1fr 1.6fr;
@@ -5610,36 +5306,14 @@ button,
     border-radius: 8px;
   }
 
-  .explorer-row-head {
-    font-size: 0.62rem;
-    padding-bottom: 0.1rem;
-  }
+  .explorer-row-head { font-size: 0.62rem; padding-bottom: 0.1rem; }
+  .col-move { font-size: 0.88rem; }
+  .games-percent { font-size: 0.8rem; }
+  .games-count { font-size: 0.62rem; }
+  .split-bar { height: 1.1rem; border-radius: 6px; }
 
-  .col-move {
-    font-size: 0.88rem;
-  }
-
-  .games-percent {
-    font-size: 0.8rem;
-  }
-
-  .games-count {
-    font-size: 0.62rem;
-  }
-
-  .split-bar {
-    height: 1.1rem;
-    border-radius: 6px;
-  }
-
-  .explorer-db-toggle {
-    margin: 0 0.4rem 0.5rem;
-  }
-
-  .explorer-db-toggle button {
-    padding: 0.32rem;
-    font-size: 0.72rem;
-  }
+  .explorer-db-toggle { margin: 0 0.4rem 0.5rem; }
+  .explorer-db-toggle button { padding: 0.32rem; font-size: 0.72rem; }
 
   .boardtools {
     position: sticky;
@@ -5652,64 +5326,22 @@ button,
     flex-wrap: nowrap;
   }
 
-  .boardtools-nav {
-    gap: 1rem;
-    justify-content: center;
-  }
+  .boardtools-nav { gap: 1rem; justify-content: center; }
 
-  .shortcuts-panel,
-  .note-editor {
+  .shortcuts-panel, .note-editor {
     width: min(92vw, 20rem);
     padding: 1rem 1.1rem;
   }
 
-  .grid-layout {
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;     
+  /* ✦ NEW: chat bubble tweaks on mobile */
+  .chat-bubble {
+    top: 6px;
+    width: min(92%, 18rem);
+    padding: 0.35rem 0.55rem 0.4rem;
   }
-
-  .analyze {
-    order: 0;
-    flex: 0 0 auto;
-    max-height: none;
-    overflow: hidden;
-  }
-  .analysis-title-row { display: none; }    
-  .analyzis-header { padding: 0.25rem 0.35rem 0; gap: 0.25rem; }
-  .line, .secondline { margin: 2px 0; padding: 0.28rem 0.45rem; }
-
-  .player-bar { order: 1; }
-  .board-row  { order: 1; }
-
-  .moves {
-    order: 2;
-    flex: 1 1 auto;
-    min-height: 0;         
-    max-height: none;
-    overscroll-behavior: contain;
-  }
-  .explorer { max-height: none; min-height: 0; }
-
-  .boardtools { order: 3; position: static; }
-
-
-  @media (max-height: 740px) {
-    .move-data .secondline + .secondline { display: none; }  
-  }
-
-  @media (max-height: 640px) {
-    .move-data .secondline { display: none; }           
-  }
-
-  @media (max-height: 520px) {
-    .grid-layout { overflow-y: auto; }
-  }
+  .cb-head { font-size: 0.62rem; gap: 0.3rem; }
+  .cb-name { max-width: 7rem; }
+  .cb-body { font-size: 0.75rem; }
+  .cb-eval { font-size: 0.68rem; }
 }
-</style>
-
-<style>
-  *, *::before, *::after {
-    -webkit-tap-highlight-color: transparent !important;
-  }
 </style>
