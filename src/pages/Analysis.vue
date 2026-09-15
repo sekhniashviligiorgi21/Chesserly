@@ -5663,16 +5663,6 @@ button,
     padding: 1rem 1.1rem;
   }
 }
-
-:deep(.cg-wrap),
-:deep(cg-container),
-:deep(cg-board),
-:deep(cg-board square),
-:deep(cg-board piece),
-:deep(svg) {
-  -webkit-tap-highlight-color: transparent !important;
-  tap-highlight-color: transparent !important;
-}
 </style>
 
 <style>
