@@ -6,7 +6,7 @@
   import { collection, query, orderBy, getDocs } from 'firebase/firestore'
 
   // --- Theme Management ---
-  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
+  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'midnight')
   watch(currentTheme, (newTheme) => {
     document.documentElement.setAttribute('data-theme', newTheme)
     localStorage.setItem('chesslab_theme', newTheme)

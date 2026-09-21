@@ -19,8 +19,8 @@
   ])
 
   const themes = [
-    { value: 'brown', label: 'Dark Wood' },
     { value: 'midnight', label: 'Midnight Dark' },
+    { value: 'brown', label: 'Dark Wood' },
     { value: 'blue', label: 'Ocean Blue' },
     { value: 'green', label: 'Forest Green' },
     { value: 'purple', label: 'Amethyst' },

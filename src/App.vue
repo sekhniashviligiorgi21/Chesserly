@@ -10,7 +10,7 @@
 
 <style>
 
-  :root, [data-theme="brown"] {
+  [data-theme="brown"] {
     --bg-1: #241a12; --bg-2: #3a2818; --bg-3: #58402a;
     --panel-1: #4a3320; --panel-2: #2e2013;
     --list-1: #6b4b30; --list-2: #4a3320;

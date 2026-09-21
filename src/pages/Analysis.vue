@@ -16,7 +16,7 @@
   import castleSfx from '../assets/sounds/castle.mp3'
   import promoteSfx from '../assets/sounds/promote.mp3'
 
-  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
+  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'midnight')
   watch(currentTheme, (newTheme) => {
     document.documentElement.setAttribute('data-theme', newTheme)
     localStorage.setItem('chesslab_theme', newTheme)

@@ -15,7 +15,7 @@
   const username = ref(localStorage.getItem(USERNAME_STORAGE_KEY) || '')
 
   // --- Apply theme instantly on script load to prevent refresh flashing ---
-  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'brown')
+  const currentTheme = ref(localStorage.getItem('chesslab_theme') || 'midnight')
   watch(currentTheme, (newTheme) => {
     document.documentElement.setAttribute('data-theme', newTheme)
     localStorage.setItem('chesslab_theme', newTheme)
