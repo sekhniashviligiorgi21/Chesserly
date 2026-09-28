@@ -137,8 +137,8 @@
   function loadStoredMultiPV() {
     const stored = Number(localStorage.getItem('chesslab_multiPV'))
     if (stored >= 1 && stored <= 3) return stored
-    localStorage.setItem('chesslab_multiPV', '3')
-    return 3
+    localStorage.setItem('chesslab_multiPV', '1')
+    return 1
   }
 
   function handleBoardClick() {
