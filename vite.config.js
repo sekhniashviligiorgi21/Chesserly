@@ -4,8 +4,6 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
-
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [
     vue(),
@@ -19,6 +17,19 @@ export default defineConfig({
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp'}
+      'Cross-Origin-Embedder-Policy': 'require-corp'
+    },
+    proxy: {
+      '/assets/core-utils.js': {
+        target: 'https://cloud.umami.is',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/assets\/core-utils.js/, '/script.js'),
+      },
+      '/api/heartbeat': {
+        target: 'https://cloud.umami.is',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/heartbeat/, '/api/send'),
+      }
     }
+  }
 })
