@@ -4,6 +4,8 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
+
+// https://vite.dev/config/
 export default defineConfig({
   plugins: [
     vue(),
@@ -17,18 +19,6 @@ export default defineConfig({
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp'
-    },
-    proxy: {
-      '/stats.js': {
-        target: 'https://umami.is',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/stats.js/, '/script.js'),
-      },
-      '/api/send': {
-        target: 'https://umami.is',
-        changeOrigin: true,
-      }
+      'Cross-Origin-Embedder-Policy': 'require-corp'}
     }
-  }
 })
